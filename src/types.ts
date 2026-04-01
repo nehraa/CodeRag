@@ -1,0 +1,253 @@
+import type { BlueprintEdge, BlueprintGraph, BlueprintNode, BlueprintNodeKind } from "@abhinav2203/codeflow-core/schema";
+import { z } from "zod";
+
+export const customHttpFormatSchema = z.enum(["json", "ndjson", "sse"]);
+export type CustomHttpFormat = z.infer<typeof customHttpFormatSchema>;
+
+export const llmTransportKindSchema = z.enum(["openai-compatible", "custom-http"]);
+export type LlmTransportKind = z.infer<typeof llmTransportKindSchema>;
+
+export const retrievalConfigSchema = z.object({
+  topK: z.number().int().positive().default(6),
+  rerankK: z.number().int().positive().default(3),
+  maxContextChars: z.number().int().positive().default(16000)
+});
+export type RetrievalConfig = z.infer<typeof retrievalConfigSchema>;
+
+export const traversalConfigSchema = z.object({
+  defaultDepth: z.number().int().min(0).default(1),
+  maxDepth: z.number().int().positive().default(3)
+});
+export type TraversalConfig = z.infer<typeof traversalConfigSchema>;
+
+export const lockingConfigSchema = z.object({
+  timeoutMs: z.number().int().positive().default(30000),
+  pollMs: z.number().int().positive().default(150),
+  staleMs: z.number().int().positive().default(300000)
+});
+export type LockingConfig = z.infer<typeof lockingConfigSchema>;
+
+export const serviceConfigSchema = z.object({
+  host: z.string().min(1).default("127.0.0.1"),
+  port: z.number().int().positive().max(65535).default(4119),
+  apiKey: z.string().min(1).optional()
+});
+export type ServiceConfig = z.infer<typeof serviceConfigSchema>;
+
+export const llmConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  transport: llmTransportKindSchema.default("openai-compatible"),
+  baseUrl: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  apiKey: z.string().min(1).optional(),
+  timeoutMs: z.number().int().positive().default(45000),
+  customHttpFormat: customHttpFormatSchema.default("json"),
+  headers: z.record(z.string(), z.string()).default({})
+});
+export type SerializableLlmConfig = z.infer<typeof llmConfigSchema>;
+export type LlmConfig = SerializableLlmConfig;
+
+export const serializableConfigSchema = z.object({
+  repoPath: z.string().min(1),
+  storageRoot: z.string().min(1).default(".coderag"),
+  retrieval: retrievalConfigSchema.default({
+    topK: 6,
+    rerankK: 3,
+    maxContextChars: 16000
+  }),
+  traversal: traversalConfigSchema.default({
+    defaultDepth: 1,
+    maxDepth: 3
+  }),
+  locking: lockingConfigSchema.default({
+    timeoutMs: 30000,
+    pollMs: 150,
+    staleMs: 300000
+  }),
+  service: serviceConfigSchema.default({
+    host: "127.0.0.1",
+    port: 4119
+  }),
+  llm: llmConfigSchema.default({
+    enabled: false,
+    transport: "openai-compatible",
+    timeoutMs: 45000,
+    customHttpFormat: "json",
+    headers: {}
+  })
+});
+export type SerializableCodeRagConfig = z.infer<typeof serializableConfigSchema>;
+
+export interface Logger {
+  debug(message: string, context?: Record<string, unknown>): void;
+  info(message: string, context?: Record<string, unknown>): void;
+  warn(message: string, context?: Record<string, unknown>): void;
+  error(message: string, context?: Record<string, unknown>): void;
+}
+
+export interface SourceSpan {
+  nodeId: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  symbol?: string;
+}
+
+export interface CallSite {
+  edgeKey: string;
+  fromNodeId: string;
+  toNodeId: string;
+  filePath: string;
+  lineNumbers: number[];
+  expressions: string[];
+}
+
+export interface IndexedNodeDocument {
+  nodeId: string;
+  name: string;
+  kind: BlueprintNodeKind;
+  filePath: string;
+  summary: string;
+  signature?: string;
+  doc: string;
+  sourceText?: string;
+  vector: number[];
+  startLine: number;
+  endLine: number;
+}
+
+export interface GraphSnapshot {
+  provider: string;
+  repoPath: string;
+  generatedAt: string;
+  graph: BlueprintGraph;
+  sourceSpans: Record<string, SourceSpan>;
+  callSites: Record<string, CallSite>;
+}
+
+export interface IndexManifestNodeEntry {
+  nodeId: string;
+  filePath: string;
+  docHash: string;
+  fileHash: string;
+}
+
+export interface IndexManifest {
+  generatedAt: string;
+  repoPath: string;
+  provider: string;
+  nodes: Record<string, IndexManifestNodeEntry>;
+  fileHashes: Record<string, string>;
+}
+
+export interface QueryOptions {
+  depth?: number;
+  includeAnswer?: boolean;
+  onToken?: (token: string) => void;
+}
+
+export type AnswerMode = "llm" | "context-only";
+
+export interface RetrievedNodeContext {
+  nodeId: string;
+  name: string;
+  kind: BlueprintNodeKind;
+  filePath: string;
+  fullFileContent: string;
+  startLine: number;
+  endLine: number;
+  callSiteLines: number[];
+  doc: string;
+  relationship: "primary" | "calls" | "called-by";
+}
+
+export interface ContextPackage {
+  question: string;
+  answerMode: AnswerMode;
+  primaryNode: RetrievedNodeContext | null;
+  relatedNodes: RetrievedNodeContext[];
+  graphSummary: string;
+  warnings: string[];
+}
+
+export interface QueryResult {
+  question: string;
+  answerMode: AnswerMode;
+  answer: string;
+  context: ContextPackage;
+}
+
+export interface LookupResult {
+  node: BlueprintNode;
+  span?: SourceSpan;
+  outgoingEdges: BlueprintEdge[];
+  incomingEdges: BlueprintEdge[];
+  doc?: IndexedNodeDocument;
+}
+
+export interface ExplainResult {
+  node: BlueprintNode;
+  summary: string;
+  dependencies: BlueprintNode[];
+  dependents: BlueprintNode[];
+  span?: SourceSpan;
+}
+
+export interface ImpactResult {
+  node: BlueprintNode;
+  impactedNodes: BlueprintNode[];
+  graphSummary: string;
+}
+
+export interface IndexSummary {
+  graph: BlueprintGraph;
+  manifest: IndexManifest;
+  snapshot: GraphSnapshot;
+  indexedNodeCount: number;
+}
+
+export interface EmbeddingProvider {
+  readonly name: string;
+  readonly dimensions: number;
+  embed(text: string): Promise<number[]>;
+}
+
+export interface VectorStore {
+  reset(records: IndexedNodeDocument[]): Promise<void>;
+  deleteByNodeIds(nodeIds: string[]): Promise<void>;
+  upsert(records: IndexedNodeDocument[]): Promise<void>;
+  search(queryVector: number[], limit: number): Promise<IndexedNodeDocument[]>;
+  get(nodeId: string): Promise<IndexedNodeDocument | null>;
+  getMany(nodeIds: string[]): Promise<IndexedNodeDocument[]>;
+  close(): Promise<void>;
+}
+
+export interface LlmRequest {
+  question: string;
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+  context: ContextPackage;
+  model?: string;
+  stream: boolean;
+}
+
+export interface LlmResponse {
+  answer: string;
+}
+
+export interface LlmTransport {
+  readonly kind: LlmTransportKind;
+  generate(request: LlmRequest, onToken?: (token: string) => void): Promise<LlmResponse>;
+}
+
+export interface GraphProvider {
+  readonly name: string;
+  analyze(repoPath: string): Promise<BlueprintGraph>;
+}
+
+export interface CodeRagConfig extends SerializableCodeRagConfig {
+  logger?: Logger;
+  embeddingProvider?: EmbeddingProvider;
+  vectorStore?: VectorStore;
+  graphProvider?: GraphProvider;
+  llmTransport?: LlmTransport;
+}
