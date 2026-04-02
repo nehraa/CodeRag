@@ -91,7 +91,7 @@ export class RepoIndexer {
     };
   }
 
-  async index(forceFull = false): Promise<IndexSummary> {
+  async index(forceFull = false, docsPath?: string): Promise<IndexSummary> {
     const graphProvider = this.config.graphProvider;
     const embeddingProvider = this.config.embeddingProvider;
     const vectorStore = this.config.vectorStore;
@@ -103,7 +103,7 @@ export class RepoIndexer {
     return this.indexLock.withLock("index", async () => {
       const { manifest: previousManifest } = await this.loadState();
       const snapshot = await buildGraphSnapshot(this.config.repoPath, graphProvider);
-      const documents = await buildIndexedDocuments(snapshot, embeddingProvider);
+      const documents = await buildIndexedDocuments(snapshot, embeddingProvider, docsPath);
       const manifest = await buildIndexManifest(this.config.repoPath, snapshot, documents);
       const { removedNodeIds, changedNodeIds } = diffNodeIds(previousManifest, manifest);
 

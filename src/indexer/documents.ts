@@ -6,6 +6,19 @@ import type { BlueprintEdge, BlueprintNode } from "@abhinav2203/codeflow-core/sc
 import type { EmbeddingProvider, GraphSnapshot, IndexManifest, IndexedNodeDocument, SourceSpan } from "../types.js";
 import { hashContent, hashFile } from "../utils/filesystem.js";
 
+/**
+ * Reads the markdown document for a node from the external docsPath.
+ * Files are matched by node ID: `${docsPath}/${nodeId}.md`
+ */
+const readExternalNodeDoc = async (nodeId: string, docsPath: string): Promise<string | null> => {
+  const docFilePath = path.join(docsPath, `${nodeId}.md`);
+  try {
+    return await fs.readFile(docFilePath, "utf8");
+  } catch {
+    return null;
+  }
+};
+
 const EMPTY_LIST = "- None";
 
 const formatList = (items: string[]): string => (items.length > 0 ? items.map((item) => `- ${item}`).join("\n") : EMPTY_LIST);
@@ -107,10 +120,13 @@ export const buildNodeDocument = (
 
 /**
  * Embeds graph-node documents so they can be searched and reranked later.
+ * If docsPath is provided, reads markdown files from that directory (named by node ID)
+ * and uses their content as the embedding text instead of generating thin markdown.
  */
 export const buildIndexedDocuments = async (
   snapshot: GraphSnapshot,
-  embeddingProvider: EmbeddingProvider
+  embeddingProvider: EmbeddingProvider,
+  docsPath?: string
 ): Promise<Record<string, IndexedNodeDocument>> => {
   const documents: Record<string, IndexedNodeDocument> = {};
 
@@ -122,7 +138,15 @@ export const buildIndexedDocuments = async (
 
     const doc = buildNodeDocument(node, span, snapshot);
     const sourceText = await readSourceText(snapshot.repoPath, span).catch(() => "");
-    const embeddingText = [doc, sourceText].filter(Boolean).join("\n\n");
+
+    let embeddingText: string;
+    if (docsPath) {
+      const externalDoc = await readExternalNodeDoc(node.id, docsPath);
+      embeddingText = externalDoc ?? [doc, sourceText].filter(Boolean).join("\n\n");
+    } else {
+      embeddingText = [doc, sourceText].filter(Boolean).join("\n\n");
+    }
+
     documents[node.id] = {
       nodeId: node.id,
       name: node.name,

@@ -62,10 +62,10 @@ export class CodeRag {
     return state;
   }
 
-  private async runIndex(forceFull: boolean): Promise<IndexSummary> {
+  private async runIndex(forceFull: boolean, docsPath?: string): Promise<IndexSummary> {
     if (!this.activeIndexPromise) {
       this.activeIndexPromise = this.indexer
-        .index(forceFull)
+        .index(forceFull, docsPath)
         .then(async (summary) => {
           const documents = await this.manifestStore.loadDocuments();
           this.hydrateState(summary.snapshot, documents);
@@ -123,16 +123,20 @@ export class CodeRag {
 
   /**
    * Builds or rebuilds the on-disk index for the configured repository.
+   * If docsPath is provided, reads .md files from that directory (named by node ID)
+   * and uses their content as the embedding text instead of generating thin markdown.
    */
-  async index(): Promise<IndexSummary> {
-    return this.runIndex(true);
+  async index(options?: { docsPath?: string }): Promise<IndexSummary> {
+    return this.runIndex(true, options?.docsPath);
   }
 
   /**
    * Reindexes the repository, incrementally by default.
+   * If docsPath is provided, reads .md files from that directory (named by node ID)
+   * and uses their content as the embedding text instead of generating thin markdown.
    */
-  async reindex(options?: { full?: boolean }): Promise<IndexSummary> {
-    return this.runIndex(Boolean(options?.full));
+  async reindex(options?: { full?: boolean; docsPath?: string }): Promise<IndexSummary> {
+    return this.runIndex(Boolean(options?.full), options?.docsPath);
   }
 
   /**

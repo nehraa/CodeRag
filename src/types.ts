@@ -74,7 +74,8 @@ export const serializableConfigSchema = z.object({
     timeoutMs: 45000,
     customHttpFormat: "json",
     headers: {}
-  })
+  }),
+  docsPath: z.string().optional()
 });
 export type SerializableCodeRagConfig = z.infer<typeof serializableConfigSchema>;
 
