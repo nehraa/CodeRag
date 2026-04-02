@@ -1,6 +1,6 @@
 {
   "name": "@abhinav2203/coderag",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Standalone code retrieval and MCP server for JS/TS repositories built on @abhinav2203/codeflow-core.",
   "license": "Apache-2.0",
   "type": "module",
