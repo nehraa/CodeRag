@@ -60,6 +60,38 @@ export class RepoIndexer {
     this.indexLock = new IndexLock(config.storageRoot, config.locking, config.logger);
   }
 
+  /**
+   * Checks if a full reindex is required based on embedding model/schema changes.
+   */
+  async checkEmbeddingModelMismatch(): Promise<{ mismatch: boolean; expected: string; actual: string | null }> {
+    const metadata = await this.config.vectorStore?.getMetadata<{
+      schemaVersion?: number;
+      embeddingProvider?: string;
+      embeddingModel?: string;
+    }>();
+
+    const currentEmbedding = this.config.embeddingProvider;
+    if (!currentEmbedding) {
+      return { mismatch: false, expected: "unknown", actual: null };
+    }
+
+    const expectedProvider = currentEmbedding.name;
+    const expectedModel = expectedProvider === "gemini" ? "models/gemini-embedding-2-preview" : "local-hash";
+    const expected = `${expectedProvider}:${expectedModel}`;
+
+    if (!metadata) {
+      return { mismatch: false, expected, actual: null };
+    }
+
+    const actualProvider = metadata.embeddingProvider ?? "local-hash";
+    const actualModel = metadata.embeddingModel ?? "local-hash";
+    const actual = `${actualProvider}:${actualModel}`;
+
+    const mismatch = metadata.schemaVersion !== 1 || actualProvider !== expectedProvider || actualModel !== expectedModel;
+
+    return { mismatch, expected, actual };
+  }
+
   async loadState(): Promise<{
     manifest: IndexManifest | null;
     snapshot: GraphSnapshot | null;
@@ -91,6 +123,16 @@ export class RepoIndexer {
     };
   }
 
+  async reindex(docsPath?: string): Promise<IndexSummary> {
+    const { mismatch, expected, actual } = await this.checkEmbeddingModelMismatch();
+    if (!mismatch && actual !== null) {
+      this.config.logger?.info("No embedding model mismatch detected, using incremental index");
+    } else {
+      this.config.logger?.info("Full reindex required", { expected, actual: actual ?? "none" });
+    }
+    return this.index(true, docsPath);
+  }
+
   async index(forceFull = false, docsPath?: string): Promise<IndexSummary> {
     const graphProvider = this.config.graphProvider;
     const embeddingProvider = this.config.embeddingProvider;
@@ -100,11 +142,19 @@ export class RepoIndexer {
       throw new IndexingError("CodeRag is missing required indexing dependencies.");
     }
 
+    // Check for embedding model mismatch - throws if mismatch detected
+    const { mismatch } = await this.checkEmbeddingModelMismatch();
+    if (mismatch && !forceFull) {
+      throw new IndexingError(
+        "Embedding model mismatch detected. Run 'coderag reindex' to rebuild the index with your current model."
+      );
+    }
+
     return this.indexLock.withLock("index", async () => {
       const { manifest: previousManifest } = await this.loadState();
       const snapshot = await buildGraphSnapshot(this.config.repoPath, graphProvider);
       const documents = await buildIndexedDocuments(snapshot, embeddingProvider, docsPath);
-      const manifest = await buildIndexManifest(this.config.repoPath, snapshot, documents);
+      const manifest = await buildIndexManifest(this.config.repoPath, snapshot, documents, embeddingProvider);
       const { removedNodeIds, changedNodeIds } = diffNodeIds(previousManifest, manifest);
 
       try {
@@ -127,7 +177,13 @@ export class RepoIndexer {
       await Promise.all([
         this.manifestStore.saveManifest(manifest),
         this.manifestStore.saveSnapshot(snapshot),
-        this.manifestStore.saveDocuments(documents)
+        this.manifestStore.saveDocuments(documents),
+        vectorStore.setMetadata({
+          schemaVersion: manifest.schemaVersion,
+          embeddingProvider: manifest.embeddingProvider,
+          embeddingModel: manifest.embeddingModel,
+          generatedAt: manifest.generatedAt
+        })
       ]);
 
       this.config.logger?.info("Indexed repository", {

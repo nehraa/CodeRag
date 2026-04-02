@@ -43,7 +43,12 @@ describe("RepoIndexer", () => {
       async getMany() {
         return [];
       },
-      async close() {}
+      async close() {},
+      async getMetadata() {
+        return null;
+      },
+      async setMetadata() {},
+      async clear() {}
     };
     const indexer = new RepoIndexer(config);
 

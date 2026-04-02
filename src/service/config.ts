@@ -3,6 +3,7 @@ import path from "node:path";
 import type { CodeRagConfig, SerializableCodeRagConfig } from "../types.js";
 import { CodeflowCoreGraphProvider } from "../adapters/codeflow-core.js";
 import { ConfigurationError } from "../errors/index.js";
+import { GeminiEmbeddingProvider } from "../indexer/gemini-embedder.js";
 import { LocalHashEmbeddingProvider } from "../indexer/embedder.js";
 import { CustomHttpTransport, OpenAiCompatibleTransport } from "../llm/transports.js";
 import { LanceVectorStore } from "../store/vector-store.js";
@@ -75,6 +76,13 @@ export const loadSerializableConfig = async (cwd: string, configPath?: string): 
     ...baseConfig,
     repoPath: process.env.CODERAG_REPO_PATH ?? baseConfig.repoPath,
     storageRoot: process.env.CODERAG_STORAGE_ROOT ?? baseConfig.storageRoot,
+    embedding: {
+      ...baseConfig.embedding,
+      provider: (process.env.CODERAG_EMBEDDING_PROVIDER as typeof baseConfig.embedding.provider) ?? baseConfig.embedding.provider,
+      dimensions: parseNumber(process.env.CODERAG_EMBEDDING_DIMENSIONS) ?? baseConfig.embedding.dimensions,
+      geminiModel: process.env.CODERAG_GEMINI_MODEL ?? baseConfig.embedding.geminiModel,
+      timeoutMs: parseNumber(process.env.CODERAG_EMBEDDING_TIMEOUT_MS) ?? baseConfig.embedding.timeoutMs
+    },
     retrieval: {
       ...baseConfig.retrieval,
       topK: parseNumber(process.env.CODERAG_TOP_K) ?? baseConfig.retrieval.topK,
@@ -119,7 +127,23 @@ export const resolveRuntimeConfig = (config: SerializableCodeRagConfig, cwd: str
   const repoPath = resolveWithin(cwd, config.repoPath);
   const storageRoot = resolveWithin(repoPath, config.storageRoot);
   const graphProvider = new CodeflowCoreGraphProvider();
-  const embeddingProvider = new LocalHashEmbeddingProvider();
+
+  // Provide defaults when embedding config is missing (backward compatibility)
+  const embeddingConfig = config.embedding ?? {
+    provider: "local-hash" as const,
+    dimensions: 256,
+    geminiModel: "models/gemini-embedding-2-preview",
+    timeoutMs: 30000
+  };
+
+  const embeddingProvider =
+    embeddingConfig.provider === "gemini"
+      ? new GeminiEmbeddingProvider({
+          apiKey: process.env.CODERAG_GEMINI_API_KEY,
+          model: embeddingConfig.geminiModel,
+          timeoutMs: embeddingConfig.timeoutMs
+        })
+      : new LocalHashEmbeddingProvider(embeddingConfig.dimensions);
   const vectorStore = new LanceVectorStore(storageRoot);
   const llmTransport =
     config.llm.enabled && config.llm.baseUrl

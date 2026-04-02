@@ -1,11 +1,13 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 
 import * as lancedb from "@lancedb/lancedb";
 
 import type { IndexedNodeDocument, VectorStore } from "../types.js";
-import { ensureDir } from "../utils/filesystem.js";
+import { ensureDir, fileExists, readJson, writeJson } from "../utils/filesystem.js";
 
 const TABLE_NAME = "node_documents";
+const METADATA_FILE = "store-metadata.json";
 
 const DELETE_ALL_FILTER = "\"nodeId\" IS NOT NULL";
 
@@ -169,6 +171,38 @@ export class LanceVectorStore implements VectorStore {
     const table = await this.getTable();
     if (table?.close) {
       await table.close();
+    }
+  }
+
+  private getMetadataPath(): string {
+    return path.join(this.dbPath, METADATA_FILE);
+  }
+
+  async getMetadata<T>(): Promise<T | null> {
+    const metadataPath = this.getMetadataPath();
+    if (!(await fileExists(metadataPath))) {
+      return null;
+    }
+    try {
+      return await readJson<T>(metadataPath);
+    } catch {
+      return null;
+    }
+  }
+
+  async setMetadata<T>(metadata: T): Promise<void> {
+    const metadataPath = this.getMetadataPath();
+    await writeJson(metadataPath, metadata);
+  }
+
+  async clear(): Promise<void> {
+    const table = await this.getTable();
+    if (table) {
+      await table.delete(DELETE_ALL_FILTER);
+    }
+    const metadataPath = this.getMetadataPath();
+    if (await fileExists(metadataPath)) {
+      await fs.unlink(metadataPath);
     }
   }
 }

@@ -136,7 +136,9 @@ export class CodeRag {
    * and uses their content as the embedding text instead of generating thin markdown.
    */
   async reindex(options?: { full?: boolean; docsPath?: string }): Promise<IndexSummary> {
-    return this.runIndex(Boolean(options?.full), options?.docsPath);
+    // reindex always does a full rebuild with model wipe
+    await this.config.vectorStore?.clear();
+    return this.runIndex(true, options?.docsPath);
   }
 
   /**
@@ -144,6 +146,14 @@ export class CodeRag {
    */
   async status(): Promise<Record<string, unknown>> {
     const state = await this.indexer.loadState();
+    const vectorMetadata = await this.config.vectorStore?.getMetadata<{
+      schemaVersion?: number;
+      embeddingProvider?: string;
+      embeddingModel?: string;
+      generatedAt?: string;
+    }>();
+    const { mismatch, expected, actual } = await this.indexer.checkEmbeddingModelMismatch();
+
     return {
       indexed: Boolean(state.snapshot),
       indexedNodeCount: Object.keys(state.documents).length,
@@ -151,7 +161,13 @@ export class CodeRag {
       repoPath: this.config.repoPath,
       storageRoot: this.config.storageRoot,
       provider: state.snapshot?.provider ?? this.config.graphProvider?.name ?? null,
-      llmEnabled: this.config.llm.enabled
+      llmEnabled: this.config.llm.enabled,
+      embeddingProvider: this.config.embeddingProvider?.name ?? "unknown",
+      embeddingModel: vectorMetadata?.embeddingModel ?? "unknown",
+      indexSchemaVersion: vectorMetadata?.schemaVersion ?? 0,
+      modelMismatch: mismatch,
+      expectedEmbedding: expected,
+      actualEmbedding: actual
     };
   }
 

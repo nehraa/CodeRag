@@ -3,7 +3,7 @@ import path from "node:path";
 
 import type { BlueprintEdge, BlueprintNode } from "@abhinav2203/codeflow-core/schema";
 
-import type { EmbeddingProvider, GraphSnapshot, IndexManifest, IndexedNodeDocument, SourceSpan } from "../types.js";
+import type { EmbeddingProvider, EmbeddingProviderKind, GraphSnapshot, IndexManifest, IndexedNodeDocument, SourceSpan } from "../types.js";
 import { hashContent, hashFile } from "../utils/filesystem.js";
 
 /**
@@ -170,21 +170,29 @@ const hashIndexedFile = async (repoPath: string, relativePath: string): Promise<
   await hashFile(path.join(repoPath, relativePath))
 ];
 
+const SCHEMA_VERSION = 1;
+
 /**
  * Builds the manifest used for incremental reindex decisions.
  */
 export const buildIndexManifest = async (
   repoPath: string,
   snapshot: GraphSnapshot,
-  documents: Record<string, IndexedNodeDocument>
+  documents: Record<string, IndexedNodeDocument>,
+  embeddingProvider: { name: string; dimensions: number } | string = "local-hash"
 ): Promise<IndexManifest> => {
   const uniquePaths = [...new Set(Object.values(documents).map((document) => document.filePath))];
   const fileHashes = Object.fromEntries(await Promise.all(uniquePaths.map((relativePath) => hashIndexedFile(repoPath, relativePath))));
 
+  const providerName = typeof embeddingProvider === "string" ? embeddingProvider : embeddingProvider.name;
+
   return {
+    schemaVersion: SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
     repoPath: snapshot.repoPath,
     provider: snapshot.provider,
+    embeddingProvider: providerName as EmbeddingProviderKind,
+    embeddingModel: providerName === "gemini" ? "models/gemini-embedding-2-preview" : "local-hash",
     nodes: Object.fromEntries(
       Object.values(documents).map((document) => [
         document.nodeId,

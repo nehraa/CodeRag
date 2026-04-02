@@ -2,6 +2,7 @@
   "name": "@abhinav2203/coderag",
   "version": "0.1.1",
   "description": "Standalone code retrieval and MCP server for JS/TS repositories built on @abhinav2203/codeflow-core.",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -29,8 +30,30 @@
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run test && npm run build",
     "test": "vitest run",
     "coverage": "vitest run --coverage"
+  },
+  "keywords": [
+    "coderag",
+    "rag",
+    "mcp",
+    "typescript",
+    "javascript",
+    "code-search",
+    "repo-analysis"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nehraa/CodeRag.git"
+  },
+  "homepage": "https://github.com/nehraa/CodeRag#readme",
+  "bugs": {
+    "url": "https://github.com/nehraa/CodeRag/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@abhinav2203/codeflow-core": "0.1.1",

@@ -7,6 +7,9 @@ export type CustomHttpFormat = z.infer<typeof customHttpFormatSchema>;
 export const llmTransportKindSchema = z.enum(["openai-compatible", "custom-http"]);
 export type LlmTransportKind = z.infer<typeof llmTransportKindSchema>;
 
+export const embeddingProviderKindSchema = z.enum(["local-hash", "gemini"]);
+export type EmbeddingProviderKind = z.infer<typeof embeddingProviderKindSchema>;
+
 export const retrievalConfigSchema = z.object({
   topK: z.number().int().positive().default(6),
   rerankK: z.number().int().positive().default(3),
@@ -47,9 +50,23 @@ export const llmConfigSchema = z.object({
 export type SerializableLlmConfig = z.infer<typeof llmConfigSchema>;
 export type LlmConfig = SerializableLlmConfig;
 
+export const embeddingConfigSchema = z.object({
+  provider: embeddingProviderKindSchema.default("local-hash"),
+  dimensions: z.number().int().positive().default(256),
+  geminiModel: z.string().min(1).default("models/gemini-embedding-2-preview"),
+  timeoutMs: z.number().int().positive().default(30000)
+});
+export type EmbeddingConfig = z.infer<typeof embeddingConfigSchema>;
+
 export const serializableConfigSchema = z.object({
   repoPath: z.string().min(1),
   storageRoot: z.string().min(1).default(".coderag"),
+  embedding: embeddingConfigSchema.default({
+    provider: "local-hash",
+    dimensions: 256,
+    geminiModel: "models/gemini-embedding-2-preview",
+    timeoutMs: 30000
+  }),
   retrieval: retrievalConfigSchema.default({
     topK: 6,
     rerankK: 3,
@@ -134,9 +151,12 @@ export interface IndexManifestNodeEntry {
 }
 
 export interface IndexManifest {
+  schemaVersion: number;
   generatedAt: string;
   repoPath: string;
   provider: string;
+  embeddingProvider: EmbeddingProviderKind;
+  embeddingModel: string;
   nodes: Record<string, IndexManifestNodeEntry>;
   fileHashes: Record<string, string>;
 }
@@ -221,6 +241,9 @@ export interface VectorStore {
   get(nodeId: string): Promise<IndexedNodeDocument | null>;
   getMany(nodeIds: string[]): Promise<IndexedNodeDocument[]>;
   close(): Promise<void>;
+  getMetadata<T>(): Promise<T | null>;
+  setMetadata<T>(metadata: T): Promise<void>;
+  clear(): Promise<void>;
 }
 
 export interface LlmRequest {
