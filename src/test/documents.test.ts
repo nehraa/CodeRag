@@ -1,15 +1,35 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 import { buildIndexManifest, buildIndexedDocuments, buildNodeDocument } from "../indexer/documents.js";
 import type { EmbeddingProvider, GraphSnapshot, SourceSpan } from "../types.js";
-import { createTempRepo } from "./helpers.js";
+import { cleanupPaths, createTempDir, createTempRepo } from "./helpers.js";
 
 class TestEmbeddingProvider implements EmbeddingProvider {
   readonly name = "test";
+  readonly model = "test-model";
   readonly dimensions = 4;
 
   async embed(text: string): Promise<number[]> {
     return [text.length, 0, 0, 0];
+  }
+}
+
+class BatchTestEmbeddingProvider implements EmbeddingProvider {
+  readonly name = "batch-test";
+  readonly model = "batch-test-model";
+  readonly dimensions = 4;
+  readonly maxBatchSize = 2;
+  readonly batches: string[][] = [];
+
+  async embed(_text: string): Promise<number[]> {
+    throw new Error("buildIndexedDocuments should use embedBatch when available");
+  }
+
+  async embedBatch(texts: string[]): Promise<number[][]> {
+    this.batches.push(texts);
+    return texts.map((text) => [text.length, texts.length, 0, 0]);
   }
 }
 
@@ -189,9 +209,62 @@ describe("document indexing", () => {
         startLine: 4,
         endLine: 10
       }
+    }, {
+      name: "gemini",
+      model: "models/custom-embedder",
+      dimensions: 768
     });
 
     expect(manifest.nodes.auth?.docHash).toHaveLength(64);
     expect(manifest.fileHashes["src/lib/auth.ts"]).toHaveLength(64);
+    expect(manifest.embeddingProvider).toBe("gemini");
+    expect(manifest.embeddingModel).toBe("models/custom-embedder");
+    expect(manifest.embeddingDimensions).toBe(768);
+    await cleanupPaths([repoPath]);
+  });
+
+  it("uses external docs when available and falls back to generated content when missing", async () => {
+    const repoPath = await createTempRepo();
+    const docsPath = await createTempDir("coderag-docs-");
+    const runtimeSnapshot = {
+      ...snapshot,
+      repoPath
+    };
+
+    await fs.writeFile(path.join(docsPath, "auth.md"), "external auth doc", "utf8");
+
+    const indexedDocuments = await buildIndexedDocuments(runtimeSnapshot, new TestEmbeddingProvider(), docsPath);
+
+    expect(indexedDocuments.auth?.vector[0]).toBe("external auth doc".length);
+    expect(indexedDocuments.session?.vector[0]).toBeGreaterThan("external auth doc".length);
+    await cleanupPaths([repoPath, docsPath]);
+  });
+
+  it("uses batched embedding when the provider supports it", async () => {
+    const repoPath = await createTempRepo();
+    const runtimeSnapshot = {
+      ...snapshot,
+      repoPath
+    };
+    const provider = new BatchTestEmbeddingProvider();
+
+    const indexedDocuments = await buildIndexedDocuments(runtimeSnapshot, provider);
+
+    expect(provider.batches).toHaveLength(2);
+    expect(provider.batches[0]).toHaveLength(2);
+    expect(provider.batches[1]).toHaveLength(1);
+    expect(indexedDocuments.auth?.vector[1]).toBe(2);
+    expect(indexedDocuments.session?.vector[1]).toBe(1);
+    await cleanupPaths([repoPath]);
+  });
+
+  it("uses local-hash defaults when no embedding metadata is supplied", async () => {
+    const repoPath = await createTempRepo();
+    const manifest = await buildIndexManifest(repoPath, snapshot, {});
+
+    expect(manifest.embeddingProvider).toBe("local-hash");
+    expect(manifest.embeddingModel).toBe("local-hash");
+    expect(manifest.embeddingDimensions).toBe(256);
+    await cleanupPaths([repoPath]);
   });
 });

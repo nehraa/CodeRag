@@ -66,7 +66,11 @@ afterEach(() => {
 describe("HTTP service", () => {
   it("serves health, status, query, and metrics endpoints", async () => {
     const coderag = {
-      status: async () => ({ indexed: true }),
+      status: async () => ({
+        indexed: true,
+        indexedNodeCount: 5,
+        modelMismatch: false
+      }),
       explain: async () => ({ node: { name: "requireAuth" } }),
       impact: async () => ({ node: { name: "requireAuth" } }),
       lookup: async () => ({ node: { name: "requireAuth" } }),
@@ -122,6 +126,7 @@ describe("HTTP service", () => {
 
     expect(JSON.parse(healthResponse.body).data.ok).toBe(true);
     expect(healthResponse.headers["strict-transport-security"]).toContain("max-age");
+    expect(readyResponse.statusCode).toBe(200);
     expect(JSON.parse(readyResponse.body).data.ready).toBe(true);
     expect(JSON.parse(statusResponse.body).data.indexed).toBe(true);
     expect(JSON.parse(explainResponse.body).data.node.name).toBe("requireAuth");
@@ -131,6 +136,25 @@ describe("HTTP service", () => {
     expect(JSON.parse(indexResponse.body).data.indexedNodeCount).toBeGreaterThan(0);
     expect(JSON.parse(reindexResponse.body).data.indexedNodeCount).toBeGreaterThan(0);
     expect(metricsResponse.body).toContain('coderag_http_requests_total{route="POST__v1_query"} 1');
+  });
+
+  it("returns a failing readiness probe when the index is empty or mismatched", async () => {
+    const coderag = {
+      status: async () => ({
+        indexed: true,
+        indexedNodeCount: 0,
+        modelMismatch: true
+      })
+    } as never;
+    const server = createHttpServer(coderag, {
+      ...createRuntimeConfig(process.cwd()),
+      service: { host: "127.0.0.1", port: 0 }
+    });
+
+    const readyResponse = await invokeServer(server, createRequest("GET", "/ready"));
+
+    expect(readyResponse.statusCode).toBe(503);
+    expect(JSON.parse(readyResponse.body).data.ready).toBe(false);
   });
 
   it("enforces bearer auth and validates request content types", async () => {
@@ -297,5 +321,35 @@ describe("HTTP service", () => {
 
     expect(badLookup.statusCode).toBe(400);
     expect(JSON.parse(nonFullIndex.body).data.indexedNodeCount).toBe(7);
+  });
+
+  it("passes the full flag through to reindex routes", async () => {
+    const coderag = {
+      reindex: vi.fn().mockResolvedValue({ indexedNodeCount: 9 })
+    } as never;
+    const server = createHttpServer(coderag, createRuntimeConfig(process.cwd()));
+
+    await invokeServer(
+      server,
+      createRequest("POST", "/v1/index", JSON.stringify({ full: true }), {
+        "content-type": "application/json"
+      })
+    );
+    await invokeServer(
+      server,
+      createRequest("POST", "/v1/reindex", JSON.stringify({ full: false }), {
+        "content-type": "application/json"
+      })
+    );
+    await invokeServer(
+      server,
+      createRequest("POST", "/v1/index", JSON.stringify({}), {
+        "content-type": "application/json"
+      })
+    );
+
+    expect(coderag.reindex).toHaveBeenNthCalledWith(1, { full: true });
+    expect(coderag.reindex).toHaveBeenNthCalledWith(2, { full: false });
+    expect(coderag.reindex).toHaveBeenNthCalledWith(3, { full: false });
   });
 });

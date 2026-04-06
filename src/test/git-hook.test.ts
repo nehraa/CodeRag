@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { installPostCommitHook } from "../indexer/git-hook.js";
+import { installPostCommitHook, isPostCommitHookInstalled } from "../indexer/git-hook.js";
 import { cleanupPaths, createTempDir } from "./helpers.js";
 
 describe("git hook installation", () => {
@@ -57,6 +57,36 @@ describe("git hook installation", () => {
 
     await installPostCommitHook(repoPath, null, logger);
     expect(logger.warn).toHaveBeenCalled();
+
+    await cleanupPaths([repoPath]);
+  });
+
+  it("returns false when no hook is installed", async () => {
+    const repoPath = await createTempDir("coderag-hook-");
+    await fs.mkdir(path.join(repoPath, ".git", "hooks"), { recursive: true });
+
+    const installed = await isPostCommitHookInstalled(repoPath);
+    expect(installed).toBe(false);
+
+    await cleanupPaths([repoPath]);
+  });
+
+  it("returns true after the hook is installed", async () => {
+    const repoPath = await createTempDir("coderag-hook-");
+    const hooksDir = path.join(repoPath, ".git", "hooks");
+    await fs.mkdir(hooksDir, { recursive: true });
+
+    await installPostCommitHook(repoPath, null);
+    const installed = await isPostCommitHookInstalled(repoPath);
+    expect(installed).toBe(true);
+
+    await cleanupPaths([repoPath]);
+  });
+
+  it("returns false for non-git directories", async () => {
+    const repoPath = await createTempDir("coderag-hook-");
+    const installed = await isPostCommitHookInstalled(repoPath);
+    expect(installed).toBe(false);
 
     await cleanupPaths([repoPath]);
   });

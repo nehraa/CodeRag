@@ -156,6 +156,19 @@ describe("CLI", () => {
     );
   });
 
+  it("rejects invalid depth flags before querying", async () => {
+    const coderag = createMockCoderag();
+    const { cli } = await loadCli({ coderag });
+
+    await expect(cli.runCli(["node", "cli", "query", "requireAuth", "--depth", "0"])).rejects.toThrow(
+      "--depth must be a positive integer."
+    );
+    await expect(cli.runCli(["node", "cli", "query", "requireAuth", "--depth", "abc"])).rejects.toThrow(
+      "--depth must be a positive integer."
+    );
+    expect(coderag.query).not.toHaveBeenCalled();
+  });
+
   it("runs serve-http until a shutdown signal arrives", async () => {
     const { cli, serveHttpServer } = await loadCli();
     setTimeout(() => {
