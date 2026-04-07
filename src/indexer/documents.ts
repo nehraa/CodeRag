@@ -20,6 +20,7 @@ const readExternalNodeDoc = async (nodeId: string, docsPath: string): Promise<st
 };
 
 const EMPTY_LIST = "- None";
+const MAX_EMBEDDING_CHARS = 2048; // Embedding models cap at ~512 tokens; extra chars waste memory
 
 const formatList = (items: string[]): string => (items.length > 0 ? items.map((item) => `- ${item}`).join("\n") : EMPTY_LIST);
 
@@ -100,46 +101,53 @@ const embedPreparedDocuments = async (
     return [];
   }
 
-  if (!embeddingProvider.embedBatch) {
-    logger?.info("Embedding documents (sequential)", { count: preparedDocuments.length });
-    const embedded: IndexedNodeDocument[] = [];
-    for (let i = 0; i < preparedDocuments.length; i += 1) {
-      const doc = preparedDocuments[i];
-      if (!doc) continue;
-      const { embeddingText, ...document } = doc;
-      embedded.push({ ...document, vector: await embeddingProvider.embed(embeddingText) });
-      if ((i + 1) % 500 === 0) {
-        logger?.info(`Embedding progress: ${i + 1}/${preparedDocuments.length}`);
-      }
-    }
-    return embedded;
-  }
+  // For ONNX (or any embedBatch provider), process sequentially to avoid OOM
+  // The ONNX runtime accumulates memory with parallel inference
+  if (embeddingProvider.embedBatch) {
+    const chunkSize = Math.max(1, embeddingProvider.maxBatchSize ?? preparedDocuments.length);
+    const chunks = chunkItems(preparedDocuments, chunkSize);
+    logger?.info("Embedding documents (batched, sequential)", { count: preparedDocuments.length, chunks: chunks.length, chunkSize });
 
-  const chunkSize = Math.max(1, embeddingProvider.maxBatchSize ?? preparedDocuments.length);
-  const chunks = chunkItems(preparedDocuments, chunkSize);
-  logger?.info("Embedding documents (batched)", { count: preparedDocuments.length, chunks: chunks.length, chunkSize });
+    const embeddedDocuments: IndexedNodeDocument[] = [];
+    let completedChunks = 0;
 
-  // Process batches in parallel (Promise.all) instead of sequentially
-  const chunkResults = await Promise.all(
-    chunks.map(async (chunk, chunkIndex) => {
+    for (const chunk of chunks) {
       const vectors = await embeddingProvider.embedBatch!(chunk.map((document) => document.embeddingText));
       if (vectors.length !== chunk.length) {
         throw new Error("Embedding provider returned a mismatched batch size.");
       }
-      if ((chunkIndex + 1) % 50 === 0 || chunkIndex === 0) {
-        logger?.info(`Embedding chunk ${chunkIndex + 1}/${chunks.length} complete`);
+      completedChunks += 1;
+      if (completedChunks % 50 === 0 || completedChunks === 1) {
+        logger?.info(`Embedding progress: ${completedChunks}/${chunks.length} chunks complete`);
       }
-      return chunk.map(({ embeddingText: _embeddingText, ...document }, index) => {
-        const vector = vectors[index];
-        return {
-          ...document,
-          vector: vector ?? []
-        };
-      });
-    })
-  );
+      for (let index = 0; index < chunk.length; index += 1) {
+        const item = chunk[index];
+        if (!item) continue;
+        const { embeddingText: _embeddingText, ...document } = item;
+        embeddedDocuments.push({ ...document, vector: vectors[index] ?? [] });
+      }
+      // Force GC every 100 chunks to reclaim ONNX runtime memory
+      if (completedChunks % 100 === 0 && globalThis.gc) {
+        globalThis.gc();
+      }
+    }
 
-  return chunkResults.flat() as IndexedNodeDocument[];
+    return embeddedDocuments;
+  }
+
+  // Non-batch providers: embed sequentially
+  logger?.info("Embedding documents (sequential)", { count: preparedDocuments.length });
+  const embedded: IndexedNodeDocument[] = [];
+  for (let i = 0; i < preparedDocuments.length; i += 1) {
+    const doc = preparedDocuments[i];
+    if (!doc) continue;
+    const { embeddingText, ...document } = doc;
+    embedded.push({ ...document, vector: await embeddingProvider.embed(embeddingText) });
+    if ((i + 1) % 500 === 0) {
+      logger?.info(`Embedding progress: ${i + 1}/${preparedDocuments.length}`);
+    }
+  }
+  return embedded;
 };
 
 /**
@@ -186,6 +194,9 @@ export const buildNodeDocument = (
  * Embeds graph-node documents so they can be searched and reranked later.
  * If docsPath is provided, reads markdown files from that directory (named by node ID)
  * and uses their content as the embedding text instead of generating thin markdown.
+ *
+ * Memory-efficient: processes nodes in chunks, embedding each chunk before
+ * moving to the next, so we never hold all documents in memory at once.
  */
 export const buildIndexedDocuments = async (
   snapshot: GraphSnapshot,
@@ -193,45 +204,113 @@ export const buildIndexedDocuments = async (
   docsPath?: string,
   logger?: { info: (msg: string, ctx?: Record<string, unknown>) => void }
 ): Promise<Record<string, IndexedNodeDocument>> => {
-  const preparedDocuments: PreparedIndexedDocument[] = [];
+  // Collect valid nodes (with path and span)
+  const validNodes: Array<{
+    node: BlueprintNode;
+    span: SourceSpan;
+    filePath: string;
+  }> = [];
 
   for (const node of snapshot.graph.nodes) {
     const span = snapshot.sourceSpans[node.id];
-    if (!node.path || !span) {
-      continue;
+    if (node.path && span) {
+      validNodes.push({ node, span, filePath: node.path });
     }
+  }
 
-    const doc = buildNodeDocument(node, span, snapshot);
-    const sourceText = await readSourceText(snapshot.repoPath, span).catch(() => "");
+  logger?.info("Valid nodes for embedding", { count: validNodes.length });
 
-    let embeddingText: string;
-    if (docsPath) {
-      const externalDoc = await readExternalNodeDoc(node.id, docsPath);
-      embeddingText = externalDoc ?? [doc, sourceText].filter(Boolean).join("\n\n");
-    } else {
-      embeddingText = [doc, sourceText].filter(Boolean).join("\n\n");
-    }
+  const allDocuments: IndexedNodeDocument[] = [];
 
-    preparedDocuments.push({
-      nodeId: node.id,
-      name: node.name,
-      kind: node.kind,
-      filePath: node.path,
-      summary: node.summary,
-      signature: node.signature ?? "",
-      doc,
-      sourceText,
-      embeddingText,
-      startLine: span.startLine,
-      endLine: span.endLine
+  // Process in chunks to avoid holding all documents in memory
+  const chunkSize = embeddingProvider.embedBatch
+    ? Math.max(1, embeddingProvider.maxBatchSize ?? validNodes.length)
+    : 100;
+  const nodeChunks = chunkItems(validNodes, chunkSize);
+  const totalChunks = nodeChunks.length;
+
+  if (embeddingProvider.embedBatch) {
+    logger?.info("Embedding documents (batched, chunked)", {
+      totalNodes: validNodes.length,
+      chunks: totalChunks,
+      chunkSize,
+    });
+  } else {
+    logger?.info("Embedding documents (sequential, chunked)", {
+      totalNodes: validNodes.length,
+      chunks: totalChunks,
     });
   }
 
-  logger?.info("Prepared documents for embedding", { count: preparedDocuments.length });
+  let completedChunks = 0;
 
-  return Object.fromEntries(
-    (await embedPreparedDocuments(preparedDocuments, embeddingProvider, logger)).map((document) => [document.nodeId, document])
-  );
+  for (const nodeChunk of nodeChunks) {
+    // Prepare documents for this chunk only
+    const preparedForChunk: PreparedIndexedDocument[] = [];
+    for (const { node, span, filePath } of nodeChunk) {
+      const doc = buildNodeDocument(node, span, snapshot);
+      const sourceText = await readSourceText(snapshot.repoPath, span).catch(() => "");
+
+      let embeddingText: string;
+      if (docsPath) {
+        const externalDoc = await readExternalNodeDoc(node.id, docsPath);
+        embeddingText = externalDoc ?? [doc, sourceText].filter(Boolean).join("\n\n");
+      } else {
+        embeddingText = [doc, sourceText].filter(Boolean).join("\n\n");
+      }
+
+      // Truncate to save memory — embedding models cap at ~512 tokens anyway
+      if (embeddingText.length > MAX_EMBEDDING_CHARS) {
+        embeddingText = embeddingText.slice(0, MAX_EMBEDDING_CHARS);
+      }
+
+      preparedForChunk.push({
+        nodeId: node.id,
+        name: node.name,
+        kind: node.kind,
+        filePath,
+        summary: node.summary,
+        signature: node.signature ?? "",
+        doc,
+        sourceText,
+        embeddingText,
+        startLine: span.startLine,
+        endLine: span.endLine,
+      });
+    }
+
+    // Embed this chunk
+    if (embeddingProvider.embedBatch) {
+      const vectors = await embeddingProvider.embedBatch!(
+        preparedForChunk.map((d) => d.embeddingText)
+      );
+      if (vectors.length !== preparedForChunk.length) {
+        throw new Error("Embedding provider returned a mismatched batch size.");
+      }
+      for (let i = 0; i < preparedForChunk.length; i += 1) {
+        const item = preparedForChunk[i];
+        if (!item) continue;
+        const { embeddingText: _e, sourceText: _s, ...document } = item;
+        allDocuments.push({ ...document, vector: vectors[i] ?? [] });
+      }
+    } else {
+      for (const { embeddingText, sourceText: _s, ...document } of preparedForChunk) {
+        allDocuments.push({ ...document, vector: await embeddingProvider.embed(embeddingText) });
+      }
+    }
+
+    completedChunks += 1;
+    if (completedChunks % 50 === 0 || completedChunks === 1) {
+      logger?.info(`Embedding progress: ${completedChunks}/${totalChunks} chunks complete (${allDocuments.length} docs)`);
+    }
+
+    // Force GC after every batch to reclaim WASM/ONNX runtime memory
+    if (globalThis.gc) {
+      globalThis.gc();
+    }
+  }
+
+  return Object.fromEntries(allDocuments.map((d) => [d.nodeId, d]));
 };
 
 const hashIndexedFile = async (repoPath: string, relativePath: string): Promise<[string, string]> => [

@@ -19,9 +19,9 @@ describe("OnnxEmbeddingProvider auto-download", () => {
     const provider = new OnnxEmbeddingProvider({ logger });
 
     expect(provider.name).toBe("onnx");
-    expect(provider.model).toBe("Xenova/gte-small");
+    expect(provider.model).toBe("Xenova/all-MiniLM-L6-v2");
     expect(provider.dimensions).toBe(384);
-    expect(provider.maxBatchSize).toBe(8);
+    expect(provider.maxBatchSize).toBe(1);
   });
 
   it("checks for model files before enabling remote download", async () => {
@@ -32,8 +32,9 @@ describe("OnnxEmbeddingProvider auto-download", () => {
     // The model files don't exist, so embed should attempt remote download
     // We can't actually test the full embed without network, but we can verify
     // the provider is configured correctly
-    expect(provider.model).toBe("Xenova/gte-small");
+    expect(provider.model).toBe("Xenova/all-MiniLM-L6-v2");
     expect(provider.dimensions).toBe(384);
+    expect(provider.maxBatchSize).toBe(1);
 
     await cleanupPaths([tmpDir]);
   });

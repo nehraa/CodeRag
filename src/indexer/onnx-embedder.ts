@@ -5,7 +5,7 @@ import type { EmbeddingProvider, Logger } from "../types.js";
 import { ConfigurationError } from "../errors/index.js";
 import { fileExists } from "../utils/filesystem.js";
 
-const DEFAULT_MODEL = "Xenova/gte-small";
+const DEFAULT_MODEL = "Xenova/all-MiniLM-L6-v2";
 const DEFAULT_DIMENSIONS = 384;
 const DEFAULT_MODEL_DIR = ".coderag-models/models";
 
@@ -47,12 +47,14 @@ const getPipeline = async (modelDir: string, logger?: Logger) => {
 
   if (!hasLocalModel) {
     logger?.info("ONNX embedding model not found locally, downloading to", { modelPath });
-    mod.env.allowRemoteModels = true;
-  } else {
-    mod.env.allowRemoteModels = false;
   }
 
+  mod.env.allowRemoteModels = true;
+
   mod.env.localModelPath = modelDir;
+
+  // Limit WASM threads to reduce memory pressure
+  mod.env.backends.onnx.wasm.numThreads = 1;
 
   const extractor = await mod.pipeline("feature-extraction", DEFAULT_MODEL, {
     quantized: true
@@ -95,7 +97,7 @@ export class OnnxEmbeddingProvider implements EmbeddingProvider {
   readonly name = "onnx" as const;
   readonly model = DEFAULT_MODEL;
   readonly dimensions = DEFAULT_DIMENSIONS;
-  readonly maxBatchSize = 8; // Small batches — ONNX inference is memory-intensive
+  readonly maxBatchSize = 1; // One at a time to minimize memory pressure
   private readonly modelDir: string;
   private readonly logger?: Logger;
 
