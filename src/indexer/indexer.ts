@@ -5,7 +5,8 @@ import { buildGraphSnapshot } from "../adapters/codeflow-core.js";
 import { IndexingError } from "../errors/index.js";
 import { ManifestStore } from "../store/manifest-store.js";
 import { IndexLock } from "../store/index-lock.js";
-import { buildIndexManifest, buildIndexedDocuments } from "./documents.js";
+import { buildIndexManifest, buildIndexedDocuments, INDEX_SCHEMA_VERSION } from "./documents.js";
+import { installPostCommitHook, isPostCommitHookInstalled } from "./git-hook.js";
 
 const diffNodeIds = (
   previousManifest: IndexManifest | null,
@@ -48,46 +49,58 @@ const buildIndexSummary = (
   indexedNodeCount: Object.keys(documents).length
 });
 
+const formatEmbeddingFingerprint = (embedding: {
+  provider: string;
+  model: string;
+  dimensions: number;
+}): string => `${embedding.provider}:${embedding.model}:${embedding.dimensions}`;
+
 /**
  * Indexes the repository graph and persists the resulting search documents.
  */
 export class RepoIndexer {
   private readonly manifestStore: ManifestStore;
   private readonly indexLock: IndexLock;
+  private readonly configPath: string | null;
 
-  constructor(private readonly config: CodeRagConfig) {
+  constructor(private readonly config: CodeRagConfig, configPath?: string) {
     this.manifestStore = new ManifestStore(config.storageRoot);
     this.indexLock = new IndexLock(config.storageRoot, config.locking, config.logger);
+    this.configPath = configPath ?? null;
   }
 
   /**
    * Checks if a full reindex is required based on embedding model/schema changes.
    */
   async checkEmbeddingModelMismatch(): Promise<{ mismatch: boolean; expected: string; actual: string | null }> {
-    const metadata = await this.config.vectorStore?.getMetadata<{
-      schemaVersion?: number;
-      embeddingProvider?: string;
-      embeddingModel?: string;
-    }>();
-
     const currentEmbedding = this.config.embeddingProvider;
     if (!currentEmbedding) {
       return { mismatch: false, expected: "unknown", actual: null };
     }
 
-    const expectedProvider = currentEmbedding.name;
-    const expectedModel = expectedProvider === "gemini" ? "models/gemini-embedding-2-preview" : "local-hash";
-    const expected = `${expectedProvider}:${expectedModel}`;
+    const expectedFingerprint = {
+      provider: currentEmbedding.name,
+      model: currentEmbedding.model,
+      dimensions: currentEmbedding.dimensions
+    };
+    const expected = formatEmbeddingFingerprint(expectedFingerprint);
+    const manifest = await this.manifestStore.loadManifest();
 
-    if (!metadata) {
+    if (!manifest) {
       return { mismatch: false, expected, actual: null };
     }
 
-    const actualProvider = metadata.embeddingProvider ?? "local-hash";
-    const actualModel = metadata.embeddingModel ?? "local-hash";
-    const actual = `${actualProvider}:${actualModel}`;
-
-    const mismatch = metadata.schemaVersion !== 1 || actualProvider !== expectedProvider || actualModel !== expectedModel;
+    const actualFingerprint = {
+      provider: manifest.embeddingProvider,
+      model: manifest.embeddingModel,
+      dimensions: manifest.embeddingDimensions
+    };
+    const actual = formatEmbeddingFingerprint(actualFingerprint);
+    const mismatch =
+      manifest.schemaVersion !== INDEX_SCHEMA_VERSION ||
+      actualFingerprint.provider !== expectedFingerprint.provider ||
+      actualFingerprint.model !== expectedFingerprint.model ||
+      actualFingerprint.dimensions !== expectedFingerprint.dimensions;
 
     return { mismatch, expected, actual };
   }
@@ -123,14 +136,28 @@ export class RepoIndexer {
     };
   }
 
-  async reindex(docsPath?: string): Promise<IndexSummary> {
+  async reindex(options: { full?: boolean; docsPath?: string } = {}): Promise<IndexSummary> {
+    const full = options.full ?? false;
     const { mismatch, expected, actual } = await this.checkEmbeddingModelMismatch();
-    if (!mismatch && actual !== null) {
-      this.config.logger?.info("No embedding model mismatch detected, using incremental index");
+
+    if (full) {
+      this.config.logger?.info("Running full CodeRag reindex.", {
+        expected,
+        actual: actual ?? "none"
+      });
+    } else if (mismatch) {
+      this.config.logger?.warn("Incremental reindex requires a matching embedding fingerprint.", {
+        expected,
+        actual: actual ?? "none"
+      });
     } else {
-      this.config.logger?.info("Full reindex required", { expected, actual: actual ?? "none" });
+      this.config.logger?.info("Running incremental CodeRag reindex.", {
+        expected,
+        actual: actual ?? "none"
+      });
     }
-    return this.index(true, docsPath);
+
+    return this.index(full, options.docsPath);
   }
 
   async index(forceFull = false, docsPath?: string): Promise<IndexSummary> {
@@ -153,7 +180,7 @@ export class RepoIndexer {
     return this.indexLock.withLock("index", async () => {
       const { manifest: previousManifest } = await this.loadState();
       const snapshot = await buildGraphSnapshot(this.config.repoPath, graphProvider);
-      const documents = await buildIndexedDocuments(snapshot, embeddingProvider, docsPath);
+      const documents = await buildIndexedDocuments(snapshot, embeddingProvider, docsPath, this.config.logger);
       const manifest = await buildIndexManifest(this.config.repoPath, snapshot, documents, embeddingProvider);
       const { removedNodeIds, changedNodeIds } = diffNodeIds(previousManifest, manifest);
 
@@ -182,6 +209,7 @@ export class RepoIndexer {
           schemaVersion: manifest.schemaVersion,
           embeddingProvider: manifest.embeddingProvider,
           embeddingModel: manifest.embeddingModel,
+          embeddingDimensions: manifest.embeddingDimensions,
           generatedAt: manifest.generatedAt
         })
       ]);
@@ -192,7 +220,21 @@ export class RepoIndexer {
         fullReindex: forceFull || !previousManifest
       });
 
+      // Auto-install post-commit hook if not already present
+      await this.ensurePostCommitHook();
+
       return buildIndexSummary(snapshot, manifest, documents);
     });
+  }
+
+  /**
+   * Ensures the post-commit hook is installed after a successful index.
+   */
+  private async ensurePostCommitHook(): Promise<void> {
+    const installed = await isPostCommitHookInstalled(this.config.repoPath);
+    if (!installed) {
+      this.config.logger?.info("Auto-installing post-commit hook for incremental indexing.");
+      await installPostCommitHook(this.config.repoPath, this.configPath, this.config.logger);
+    }
   }
 }

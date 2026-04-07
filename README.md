@@ -1,6 +1,8 @@
 # CodeRag
 
-CodeRag is a standalone npm package that gives coding agents targeted retrieval over a JavaScript or TypeScript repository. It uses `@abhinav2203/codeflow-core` for repo analysis, stores node documents in LanceDB, traverses graph edges for surrounding context, and can optionally ask a local LLM server to turn the retrieved context into an answer.
+CodeRag is a standalone npm package that gives coding agents targeted retrieval over a codebase. It uses `@abhinav2203/codeflow-core` with tree-sitter for multi-language repo analysis, stores node documents in LanceDB, traverses graph edges for surrounding context, and can optionally ask a local LLM server to turn the retrieved context into an answer.
+
+**Supported languages:** TypeScript, JavaScript, Go, Python, C, C++, Rust.
 
 ## What ships in this repo
 
@@ -65,16 +67,31 @@ CodeRag loads configuration in this order:
 1. Explicit `--config` path
 2. `coderag.config.json`
 3. `.coderag.json`
-4. Environment overrides
+4. `.env` values from the current working directory
+5. Environment overrides
 
 Supported environment overrides:
 
 - `CODERAG_REPO_PATH`
 - `CODERAG_STORAGE_ROOT`
+- `CODERAG_EMBEDDING_PROVIDER`
+- `CODERAG_EMBEDDING_DIMENSIONS`
+- `CODERAG_ONNX_MODEL_DIR`
+- `CODERAG_GEMINI_MODEL`
+- `CODERAG_GEMINI_API_KEY`
+- `CODERAG_GEMINI_AI_KEY`
+- `CODERAG_EMBEDDING_TIMEOUT_MS`
 - `CODERAG_TOP_K`
 - `CODERAG_RERANK_K`
+- `CODERAG_MAX_CONTEXT_CHARS`
 - `CODERAG_DEFAULT_DEPTH`
 - `CODERAG_MAX_DEPTH`
+- `CODERAG_LOCK_TIMEOUT_MS`
+- `CODERAG_LOCK_POLL_MS`
+- `CODERAG_LOCK_STALE_MS`
+- `CODERAG_SERVICE_HOST`
+- `CODERAG_SERVICE_PORT`
+- `CODERAG_SERVICE_API_KEY`
 - `CODERAG_LLM_ENABLED`
 - `CODERAG_LLM_TRANSPORT`
 - `CODERAG_LLM_BASE_URL`
@@ -82,6 +99,24 @@ Supported environment overrides:
 - `CODERAG_LLM_API_KEY`
 - `CODERAG_LLM_TIMEOUT_MS`
 - `CODERAG_CUSTOM_HTTP_FORMAT`
+- `CODERAG_LLM_HEADERS`
+
+When `embedding.provider` is `gemini`, CodeRag defaults to `models/gemini-embedding-001` and requests 768-dimensional vectors explicitly so the stored embedding fingerprint matches the vectors written to LanceDB. It accepts either `CODERAG_GEMINI_API_KEY` or the compatibility alias `CODERAG_GEMINI_AI_KEY`.
+
+When `embedding.provider` is `onnx`, CodeRag uses `Xenova/gte-small` (384-dim, ~33MB) running locally via `@xenova/transformers`. No API key or external server needed. The model must be downloaded to `<onnxModelDir>/Xenova/gte-small/` (default `.coderag-models/models/Xenova/gte-small/`).
+
+```bash
+# Download the ONNX embedding model (~33MB)
+python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download('Xenova/gte-small', local_dir='.coderag-models/models',
+                  allow_patterns=['onnx/model_quantized.onnx', 'config.json',
+                                  'tokenizer.json', 'tokenizer_config.json',
+                                  'special_tokens_map.json'])
+"
+
+# Then set embedding.provider to "onnx" in your config and run coderag init
+```
 
 ## Local LLM integration
 
@@ -171,6 +206,7 @@ coderag index [--config path]
 coderag reindex [--config path] [--full]
 coderag query "question" [--config path] [--depth 2] [--json]
 coderag serve-mcp [--config path]
+coderag serve-http [--config path]
 coderag doctor [--config path]
 ```
 
@@ -180,9 +216,12 @@ coderag doctor [--config path]
 
 ## Production notes
 
-- JavaScript and TypeScript repos are supported.
+- TypeScript, JavaScript, Go, Python, C, C++, and Rust repos are supported.
+- Excluded directories: `node_modules`, `.git`, `.next`, `dist`, `build`, `target`, `__pycache__`, `vendor`, `.venv`, `artifacts`, `coverage`.
 - Call-site extraction is best effort for dynamic dispatch, reflection, or generated code. Missing call sites are returned as unresolved metadata, not guessed values.
-- The built-in embedding strategy is deterministic and zero-setup. If you need stronger semantic recall, provide a custom embedding provider through the library API.
+- The built-in `local-hash` embedding strategy is deterministic and zero-setup. The `onnx` provider runs `Xenova/gte-small` locally (384-dim, ~33MB) for semantic-quality embeddings without any API key. If you need cloud-quality embeddings, use the `gemini` provider.
+- `serve-http` exposes `/health`, `/ready`, `/metrics`, and `/v1/*` endpoints. `/ready` only reports ready once the index exists, contains documents, and matches the configured embedding fingerprint.
+- If you use Gemini embeddings, set `CODERAG_GEMINI_API_KEY` or `CODERAG_GEMINI_AI_KEY` before indexing. Changing `CODERAG_GEMINI_MODEL` requires a full reindex because the persisted embedding fingerprint includes the model name and dimensions.
 - Live E2E runs in this repo were verified against an OpenAI-compatible NVIDIA endpoint and against both the CodeRag and CodeFlow repositories.
 
 ## Development

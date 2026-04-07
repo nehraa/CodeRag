@@ -6,6 +6,12 @@ import { ensureDir } from "../utils/filesystem.js";
 
 const HOOK_MARKER = "# Added by CodeRag";
 
+/**
+ * Escape a value for safe interpolation into a POSIX shell single-quoted string.
+ * Wraps the value in single quotes and escapes any embedded single quotes.
+ */
+const shellQuote = (value: string): string => "'" + value.replace(/'/g, "'\\''") + "'";
+
 const resolveGitDir = async (repoPath: string): Promise<string | null> => {
   const dotGitPath = path.join(repoPath, ".git");
   const stats = await fs.stat(dotGitPath).catch(() => null);
@@ -24,6 +30,20 @@ const resolveGitDir = async (repoPath: string): Promise<string | null> => {
   }
 
   return path.resolve(repoPath, match[1]);
+};
+
+/**
+ * Checks whether the CodeRag post-commit hook is installed.
+ */
+export const isPostCommitHookInstalled = async (repoPath: string): Promise<boolean> => {
+  const gitDir = await resolveGitDir(repoPath);
+  if (!gitDir) {
+    return false;
+  }
+
+  const hookPath = path.join(gitDir, "hooks", "post-commit");
+  const existingHook = await fs.readFile(hookPath, "utf8").catch(() => "");
+  return existingHook.includes(HOOK_MARKER);
 };
 
 export const installPostCommitHook = async (
@@ -53,12 +73,12 @@ export const installPostCommitHook = async (
     await fs.writeFile(backupHookPath, existingHook, "utf8");
   }
 
-  const configArgument = configPath ? ` --config "${configPath}"` : "";
+  const configArgument = configPath ? ` --config ${shellQuote(configPath)}` : "";
   const script = `#!/bin/sh
 ${HOOK_MARKER}
 set -e
-if [ -f "${backupHookPath}" ]; then
-  sh "${backupHookPath}"
+if [ -f ${shellQuote(backupHookPath)} ]; then
+  sh ${shellQuote(backupHookPath)}
 fi
 if command -v npx >/dev/null 2>&1; then
   npx --no-install coderag reindex${configArgument} >/dev/null 2>&1 || true

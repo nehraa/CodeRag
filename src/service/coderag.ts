@@ -52,7 +52,7 @@ export class CodeRag {
   private loadedState?: LoadedState;
 
   constructor(private readonly config: CodeRagConfig) {
-    this.indexer = new RepoIndexer(config);
+    this.indexer = new RepoIndexer(config, config.configPath);
     this.manifestStore = new ManifestStore(config.storageRoot);
   }
 
@@ -62,10 +62,9 @@ export class CodeRag {
     return state;
   }
 
-  private async runIndex(forceFull: boolean, docsPath?: string): Promise<IndexSummary> {
+  private async runIndexJob(indexOperation: () => Promise<IndexSummary>): Promise<IndexSummary> {
     if (!this.activeIndexPromise) {
-      this.activeIndexPromise = this.indexer
-        .index(forceFull, docsPath)
+      this.activeIndexPromise = indexOperation()
         .then(async (summary) => {
           const documents = await this.manifestStore.loadDocuments();
           this.hydrateState(summary.snapshot, documents);
@@ -94,7 +93,7 @@ export class CodeRag {
       return this.hydrateState(waitedState.snapshot, waitedState.documents);
     }
 
-    await this.runIndex(false);
+    await this.runIndexJob(() => this.indexer.index(false));
     return this.loadedState!;
   }
 
@@ -127,7 +126,7 @@ export class CodeRag {
    * and uses their content as the embedding text instead of generating thin markdown.
    */
   async index(options?: { docsPath?: string }): Promise<IndexSummary> {
-    return this.runIndex(true, options?.docsPath);
+    return this.runIndexJob(() => this.indexer.index(true, options?.docsPath));
   }
 
   /**
@@ -136,9 +135,12 @@ export class CodeRag {
    * and uses their content as the embedding text instead of generating thin markdown.
    */
   async reindex(options?: { full?: boolean; docsPath?: string }): Promise<IndexSummary> {
-    // reindex always does a full rebuild with model wipe
-    await this.config.vectorStore?.clear();
-    return this.runIndex(true, options?.docsPath);
+    return this.runIndexJob(() =>
+      this.indexer.reindex({
+        full: options?.full ?? false,
+        docsPath: options?.docsPath
+      })
+    );
   }
 
   /**
@@ -146,13 +148,10 @@ export class CodeRag {
    */
   async status(): Promise<Record<string, unknown>> {
     const state = await this.indexer.loadState();
-    const vectorMetadata = await this.config.vectorStore?.getMetadata<{
-      schemaVersion?: number;
-      embeddingProvider?: string;
-      embeddingModel?: string;
-      generatedAt?: string;
-    }>();
     const { mismatch, expected, actual } = await this.indexer.checkEmbeddingModelMismatch();
+    const embeddingProvider = state.manifest?.embeddingProvider ?? this.config.embeddingProvider?.name ?? "unknown";
+    const embeddingModel = state.manifest?.embeddingModel ?? this.config.embeddingProvider?.model ?? "unknown";
+    const embeddingDimensions = state.manifest?.embeddingDimensions ?? this.config.embeddingProvider?.dimensions ?? 0;
 
     return {
       indexed: Boolean(state.snapshot),
@@ -162,9 +161,10 @@ export class CodeRag {
       storageRoot: this.config.storageRoot,
       provider: state.snapshot?.provider ?? this.config.graphProvider?.name ?? null,
       llmEnabled: this.config.llm.enabled,
-      embeddingProvider: this.config.embeddingProvider?.name ?? "unknown",
-      embeddingModel: vectorMetadata?.embeddingModel ?? "unknown",
-      indexSchemaVersion: vectorMetadata?.schemaVersion ?? 0,
+      embeddingProvider,
+      embeddingModel,
+      embeddingDimensions,
+      indexSchemaVersion: state.manifest?.schemaVersion ?? 0,
       modelMismatch: mismatch,
       expectedEmbedding: expected,
       actualEmbedding: actual

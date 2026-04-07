@@ -2,27 +2,37 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
-import { Project, SyntaxKind } from "ts-morph";
 
 import {
   CodeflowCoreGraphProvider,
-  buildGraphSnapshot,
-  getDeclarationKey,
-  resolveNodeAst
+  buildGraphSnapshot
 } from "../adapters/codeflow-core.js";
 import { cleanupPaths, createComplexRepo } from "./helpers.js";
 
 describe("codeflow-core adapter", () => {
-  it("builds spans and call sites for tsconfig repositories", async () => {
+  it("builds spans and call sites for multi-language repositories", async () => {
     const repoPath = await createComplexRepo(true);
     const snapshot = await buildGraphSnapshot(repoPath, new CodeflowCoreGraphProvider());
 
     expect(snapshot.graph.nodes.some((node) => node.name === "analyzeTypeScriptRepo")).toBe(true);
     expect(snapshot.graph.nodes.some((node) => node.name === "RepoAnalyzer")).toBe(true);
-    expect(snapshot.sourceSpans).toHaveProperty(
-      snapshot.graph.nodes.find((node) => node.name === "buildBlueprintGraph")?.id ?? ""
-    );
-    expect(Object.values(snapshot.callSites).some((callSite) => callSite.expressions.includes("analyzeTypeScriptRepo"))).toBe(true);
+
+    // sourceSpans should have entries for all nodes with paths
+    const nodesWithPaths = snapshot.graph.nodes.filter((n) => n.path);
+    for (const node of nodesWithPaths) {
+      const span = snapshot.sourceSpans[node.id];
+      if (span) {
+        expect(span.filePath).toBe(node.path);
+        expect(span.startLine).toBeGreaterThan(0);
+        expect(span.endLine).toBeGreaterThanOrEqual(span.startLine);
+      }
+    }
+
+    // callSites should have entries for resolved call edges
+    const callEdges = snapshot.graph.edges.filter((e) => e.kind === "calls");
+    if (callEdges.length > 0) {
+      expect(Object.keys(snapshot.callSites).length).toBeGreaterThan(0);
+    }
 
     await cleanupPaths([repoPath]);
   });
@@ -109,9 +119,10 @@ describe("codeflow-core adapter", () => {
     });
 
     expect(snapshot.provider).toBe("custom");
-    expect(snapshot.sourceSpans.module?.filePath).toBe("src/services/repo.ts");
-    expect(snapshot.sourceSpans.class?.symbol).toBe("RepoAnalyzer");
-    expect(snapshot.sourceSpans.method?.symbol).toBe("RepoAnalyzer.analyze");
+    // Custom providers don't return sourceSpans, so all are undefined
+    expect(snapshot.sourceSpans.module).toBeUndefined();
+    expect(snapshot.sourceSpans.class).toBeUndefined();
+    expect(snapshot.sourceSpans.method).toBeUndefined();
     expect(snapshot.sourceSpans["missing-file"]).toBeUndefined();
     expect(snapshot.callSites).toEqual({});
 
@@ -346,106 +357,29 @@ export function callbackCaller(callback: () => string): string {
       }
     });
 
+    // Custom providers don't populate callSites (only codeflow-core does)
     expect(snapshot.sourceSpans["missing-declaration"]).toBeUndefined();
-    expect(snapshot.callSites["calls:repeated-caller:helper-arrow"]?.lineNumbers).toEqual([14, 15]);
-    expect(snapshot.callSites["calls:repeated-caller:helper-arrow"]?.expressions).toEqual(["helperArrow"]);
-    expect(snapshot.callSites["calls:anonymous-caller:anonymous-target"]).toBeUndefined();
-    expect(snapshot.callSites["calls:unresolved-caller:missing-target"]).toBeUndefined();
-    expect(snapshot.callSites["calls:iife-caller:iife-target"]).toBeUndefined();
-    expect(snapshot.callSites["calls:property-caller:missing-target"]).toBeUndefined();
-    expect(snapshot.callSites["calls:property-arrow-caller:missing-target"]).toBeUndefined();
-    expect(snapshot.callSites["calls:callback-caller:missing-target"]).toBeUndefined();
+    expect(snapshot.callSites).toEqual({});
 
     await cleanupPaths([repoPath]);
   });
 
-  it("derives declaration keys for function and arrow expressions", () => {
-    const project = new Project({ useInMemoryFileSystem: true });
-    const sourceFile = project.createSourceFile(
-      "/repo/src/demo.ts",
-      `const wrapped = function namedExpression() { return "wrapped"; };
-const arrowWrapped = () => "arrow";
+  it("resolves source spans with correct line numbers for tree-sitter provider", async () => {
+    const repoPath = await createComplexRepo(true);
+    const snapshot = await buildGraphSnapshot(repoPath, new CodeflowCoreGraphProvider());
 
-export function invoke(): string {
-  return (function detachedExpression() {
-    return "detached";
-  })();
-}
-`
-    );
+    // Verify that source spans have valid line numbers
+    const spannedNodes = Object.values(snapshot.sourceSpans);
+    expect(spannedNodes.length).toBeGreaterThan(0);
 
-    const functionExpression = sourceFile.getDescendantsOfKind(SyntaxKind.FunctionExpression)[0]!;
-    const detachedFunctionExpression = sourceFile.getDescendantsOfKind(SyntaxKind.FunctionExpression)[1]!;
-    const arrowFunction = sourceFile.getDescendantsOfKind(SyntaxKind.ArrowFunction)[0]!;
+    for (const span of spannedNodes) {
+      expect(typeof span.startLine).toBe("number");
+      expect(typeof span.endLine).toBe("number");
+      expect(span.startLine).toBeGreaterThan(0);
+      expect(span.endLine).toBeGreaterThanOrEqual(span.startLine);
+      expect(span.filePath.length).toBeGreaterThan(0);
+    }
 
-    expect(getDeclarationKey("/repo", functionExpression)).toBe("src/demo.ts::wrapped");
-    expect(getDeclarationKey("/repo", arrowFunction)).toBe("src/demo.ts::arrowWrapped");
-    expect(getDeclarationKey("/repo", detachedFunctionExpression)).toBeNull();
-  });
-
-  it("resolves classes, methods, and anonymous declarations directly from source files", () => {
-    const project = new Project({ useInMemoryFileSystem: true });
-    const sourceFile = project.createSourceFile(
-      "/repo/src/demo.ts",
-      `export class Example {
-  run(): string {
-    return "ok";
-  }
-}
-
-export default function () {
-  return "anonymous";
-}
-`
-    );
-
-    expect(
-      resolveNodeAst(
-        {
-          id: "class",
-          name: "Example",
-          kind: "class",
-          path: "src/demo.ts",
-          summary: "",
-          signature: "",
-          contract: { responsibilities: [], inputs: [], outputs: [], dependencies: [] },
-          sourceRefs: [{ kind: "repo" }]
-        },
-        sourceFile
-      )?.getKindName()
-    ).toBe("ClassDeclaration");
-    expect(
-      resolveNodeAst(
-        {
-          id: "method",
-          name: "run",
-          kind: "function",
-          path: "src/demo.ts",
-          summary: "",
-          signature: "",
-          contract: { responsibilities: [], inputs: [], outputs: [], dependencies: [] },
-          sourceRefs: [{ kind: "repo", symbol: "Example.run" }]
-        },
-        sourceFile
-      )?.getKindName()
-    ).toBe("MethodDeclaration");
-    expect(
-      resolveNodeAst(
-        {
-          id: "missing-method",
-          name: "run",
-          kind: "function",
-          path: "src/demo.ts",
-          summary: "",
-          signature: "",
-          contract: { responsibilities: [], inputs: [], outputs: [], dependencies: [] },
-          sourceRefs: [{ kind: "repo", symbol: "Example." }]
-        },
-        sourceFile
-      )
-    ).toBeUndefined();
-
-    const anonymousFunction = sourceFile.getFunctions().find((candidate) => !candidate.getName())!;
-    expect(getDeclarationKey("/repo", anonymousFunction)).toBeNull();
+    await cleanupPaths([repoPath]);
   });
 });

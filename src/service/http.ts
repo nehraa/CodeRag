@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 
 import { z } from "zod";
@@ -80,7 +80,16 @@ const isAuthorized = (request: IncomingMessage, apiKey: string | undefined): boo
   }
 
   const authorization = request.headers.authorization;
-  return authorization === `Bearer ${apiKey}`;
+  if (typeof authorization !== "string") {
+    return false;
+  }
+
+  const expected = `Bearer ${apiKey}`;
+  if (authorization.length !== expected.length) {
+    return false;
+  }
+
+  return timingSafeEqual(Buffer.from(authorization), Buffer.from(expected));
 };
 
 const hasJsonContentType = (request: IncomingMessage): boolean => {
@@ -176,6 +185,12 @@ const errorResponse = (error: unknown): { code: string; message: string; details
   };
 };
 
+const isReadyStatus = (status: Record<string, unknown>): boolean =>
+  status.indexed === true &&
+  typeof status.indexedNodeCount === "number" &&
+  status.indexedNodeCount > 0 &&
+  status.modelMismatch === false;
+
 const createQueryHandler = (coderag: CodeRag): HttpRouteHandler => async (request, response, requestId) => {
   const body = await readJsonBody(request, queryBodySchema);
   const result = await coderag.query(body.question, {
@@ -202,7 +217,7 @@ const createImpactHandler = (coderag: CodeRag): HttpRouteHandler => async (reque
 
 const createIndexHandler = (coderag: CodeRag): HttpRouteHandler => async (request, response, requestId) => {
   const body = await readJsonBody(request, reindexBodySchema);
-  const result = body.full ? await coderag.index() : await coderag.reindex({ full: false });
+  const result = await coderag.reindex({ full: body.full ?? false });
   writeJson(request, response, 200, requestId, { data: result, requestId });
 };
 
@@ -224,8 +239,9 @@ const createHealthHandler = (coderag: CodeRag): HttpRouteHandler => async (reque
 
 const createReadyHandler = (coderag: CodeRag): HttpRouteHandler => async (request, response, requestId) => {
   const status = await coderag.status();
-  writeJson(request, response, 200, requestId, {
-    data: { ready: true, status },
+  const ready = isReadyStatus(status);
+  writeJson(request, response, ready ? 200 : 503, requestId, {
+    data: { ready, status },
     requestId
   });
 };

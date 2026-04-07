@@ -3,11 +3,12 @@ import path from "node:path";
 import type { CodeRagConfig, SerializableCodeRagConfig } from "../types.js";
 import { CodeflowCoreGraphProvider } from "../adapters/codeflow-core.js";
 import { ConfigurationError } from "../errors/index.js";
-import { GeminiEmbeddingProvider } from "../indexer/gemini-embedder.js";
+import { GeminiEmbeddingProvider, resolveGeminiApiKey } from "../indexer/gemini-embedder.js";
 import { LocalHashEmbeddingProvider } from "../indexer/embedder.js";
+import { OnnxEmbeddingProvider } from "../indexer/onnx-embedder.js";
 import { CustomHttpTransport, OpenAiCompatibleTransport } from "../llm/transports.js";
 import { LanceVectorStore } from "../store/vector-store.js";
-import { fileExists, readJson, resolveWithin } from "../utils/filesystem.js";
+import { fileExists, readJson, readTextFile, resolveWithin } from "../utils/filesystem.js";
 import { createConsoleLogger } from "../utils/logger.js";
 import {
   llmConfigSchema,
@@ -17,6 +18,70 @@ import {
 } from "../types.js";
 
 const CONFIG_FILES = ["coderag.config.json", ".coderag.json"];
+const DOTENV_FILE = ".env";
+
+const parseDotEnvValue = (rawValue: string): string => {
+  const value = rawValue.trim();
+  if (
+    value.length >= 2 &&
+    ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    const unquoted = value.slice(1, -1);
+    if (value.startsWith("\"")) {
+      return unquoted
+        .replaceAll("\\n", "\n")
+        .replaceAll("\\r", "\r")
+        .replaceAll("\\t", "\t")
+        .replaceAll('\\"', "\"")
+        .replaceAll("\\\\", "\\");
+    }
+
+    return unquoted;
+  }
+
+  return value;
+};
+
+const parseDotEnv = (content: string): Record<string, string> => {
+  const parsed: Record<string, string> = {};
+  const lines = content.split(/\r?\n/);
+
+  for (const [index, originalLine] of lines.entries()) {
+    const line = originalLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+
+    const normalizedLine = line.startsWith("export ") ? line.slice("export ".length).trim() : line;
+    const equalsIndex = normalizedLine.indexOf("=");
+    if (equalsIndex <= 0) {
+      throw new ConfigurationError(`Invalid ${DOTENV_FILE} entry on line ${index + 1}. Expected KEY=value.`);
+    }
+
+    const key = normalizedLine.slice(0, equalsIndex).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      throw new ConfigurationError(`Invalid ${DOTENV_FILE} key "${key}" on line ${index + 1}.`);
+    }
+
+    parsed[key] = parseDotEnvValue(normalizedLine.slice(equalsIndex + 1));
+  }
+
+  return parsed;
+};
+
+const loadDotEnv = async (cwd: string): Promise<void> => {
+  const envPath = path.join(cwd, DOTENV_FILE);
+  if (!(await fileExists(envPath))) {
+    return;
+  }
+
+  const entries = parseDotEnv(await readTextFile(envPath));
+  for (const [key, value] of Object.entries(entries)) {
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+};
 
 const parseBoolean = (value: string | undefined): boolean | undefined => {
   if (value === undefined) {
@@ -66,6 +131,7 @@ const resolveConfigPath = async (cwd: string, configPath?: string): Promise<stri
  * Loads the serializable CodeRag config from disk and environment overrides.
  */
 export const loadSerializableConfig = async (cwd: string, configPath?: string): Promise<SerializableCodeRagConfig> => {
+  await loadDotEnv(cwd);
   const resolvedConfigPath = await resolveConfigPath(cwd, configPath);
   const baseConfig = resolvedConfigPath
     ? serializableConfigSchema.parse(await readJson<SerializableCodeRagConfig>(resolvedConfigPath))
@@ -81,7 +147,8 @@ export const loadSerializableConfig = async (cwd: string, configPath?: string): 
       provider: (process.env.CODERAG_EMBEDDING_PROVIDER as typeof baseConfig.embedding.provider) ?? baseConfig.embedding.provider,
       dimensions: parseNumber(process.env.CODERAG_EMBEDDING_DIMENSIONS) ?? baseConfig.embedding.dimensions,
       geminiModel: process.env.CODERAG_GEMINI_MODEL ?? baseConfig.embedding.geminiModel,
-      timeoutMs: parseNumber(process.env.CODERAG_EMBEDDING_TIMEOUT_MS) ?? baseConfig.embedding.timeoutMs
+      timeoutMs: parseNumber(process.env.CODERAG_EMBEDDING_TIMEOUT_MS) ?? baseConfig.embedding.timeoutMs,
+      onnxModelDir: process.env.CODERAG_ONNX_MODEL_DIR ?? baseConfig.embedding.onnxModelDir
     },
     retrieval: {
       ...baseConfig.retrieval,
@@ -132,24 +199,49 @@ export const resolveRuntimeConfig = (config: SerializableCodeRagConfig, cwd: str
   const embeddingConfig = config.embedding ?? {
     provider: "local-hash" as const,
     dimensions: 256,
-    geminiModel: "models/gemini-embedding-2-preview",
+    geminiModel: "models/gemini-embedding-001",
     timeoutMs: 30000
   };
 
   const embeddingProvider =
     embeddingConfig.provider === "gemini"
       ? new GeminiEmbeddingProvider({
-          apiKey: process.env.CODERAG_GEMINI_API_KEY,
+          apiKey: resolveGeminiApiKey(),
           model: embeddingConfig.geminiModel,
           timeoutMs: embeddingConfig.timeoutMs
         })
-      : new LocalHashEmbeddingProvider(embeddingConfig.dimensions);
+      : embeddingConfig.provider === "onnx"
+        ? new OnnxEmbeddingProvider({
+            modelDir: embeddingConfig.onnxModelDir,
+            logger: undefined // logger not yet available at config resolution time
+          })
+        : new LocalHashEmbeddingProvider(embeddingConfig.dimensions);
   const vectorStore = new LanceVectorStore(storageRoot);
+
+  // Auto-detect LLM provider from environment when LLM is enabled but no baseUrl is set
+  const llmConfig = { ...config.llm };
+  if (llmConfig.enabled && !llmConfig.baseUrl) {
+    if (process.env.OPENROUTER_API_KEY) {
+      llmConfig.baseUrl = "https://openrouter.ai/api/v1";
+      llmConfig.apiKey = process.env.OPENROUTER_API_KEY;
+      llmConfig.transport = "openai-compatible";
+    } else if (process.env.OPENAI_API_KEY) {
+      llmConfig.baseUrl = "https://api.openai.com/v1";
+      llmConfig.apiKey = process.env.OPENAI_API_KEY;
+      llmConfig.transport = "openai-compatible";
+    } else if (process.env.ANTHROPIC_API_KEY) {
+      llmConfig.baseUrl = "https://api.anthropic.com";
+      llmConfig.apiKey = process.env.ANTHROPIC_API_KEY;
+      llmConfig.transport = "custom-http";
+      llmConfig.customHttpFormat = "json";
+    }
+  }
+
   const llmTransport =
-    config.llm.enabled && config.llm.baseUrl
-      ? config.llm.transport === "custom-http"
-        ? new CustomHttpTransport(config.llm)
-        : new OpenAiCompatibleTransport(config.llm)
+    llmConfig.enabled && llmConfig.baseUrl
+      ? llmConfig.transport === "custom-http"
+        ? new CustomHttpTransport(llmConfig)
+        : new OpenAiCompatibleTransport(llmConfig)
       : undefined;
 
   return {
@@ -160,7 +252,8 @@ export const resolveRuntimeConfig = (config: SerializableCodeRagConfig, cwd: str
     graphProvider,
     embeddingProvider,
     vectorStore,
-    llmTransport
+    llmTransport,
+    llm: llmConfig
   };
 };
 
@@ -170,6 +263,7 @@ export const resolveRuntimeConfig = (config: SerializableCodeRagConfig, cwd: str
 export const loadCodeRagConfig = async (cwd: string, configPath?: string): Promise<CodeRagConfig> => {
   const serializableConfig = await loadSerializableConfig(cwd, configPath);
   const runtimeConfig = resolveRuntimeConfig(serializableConfig, cwd);
+  const resolvedConfigPath = configPath ? path.resolve(cwd, configPath) : undefined;
 
   if (runtimeConfig.retrieval.rerankK > runtimeConfig.retrieval.topK) {
     throw new ConfigurationError("retrieval.rerankK must be less than or equal to retrieval.topK.");
@@ -179,5 +273,8 @@ export const loadCodeRagConfig = async (cwd: string, configPath?: string): Promi
     throw new ConfigurationError("traversal.defaultDepth must be less than or equal to traversal.maxDepth.");
   }
 
-  return runtimeConfig;
+  return {
+    ...runtimeConfig,
+    configPath: resolvedConfigPath
+  };
 };

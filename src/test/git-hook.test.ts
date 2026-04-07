@@ -28,7 +28,7 @@ describe("git hook installation", () => {
     const hookContent = await fs.readFile(path.join(hooksDir, "post-commit"), "utf8");
     const backupContent = await fs.readFile(path.join(hooksDir, "post-commit.coderag.previous"), "utf8");
 
-    expect(hookContent).toContain("npx --no-install coderag reindex --config \"coderag.config.json\"");
+    expect(hookContent).toContain("npx --no-install coderag reindex --config 'coderag.config.json'");
     expect(backupContent).toContain("echo previous");
 
     await cleanupPaths([repoPath]);

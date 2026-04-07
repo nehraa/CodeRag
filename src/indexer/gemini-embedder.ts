@@ -2,7 +2,11 @@ import type { EmbeddingProvider } from "../types.js";
 import { ConfigurationError } from "../errors/index.js";
 
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
-const DEFAULT_MODEL = "models/gemini-embedding-2-preview";
+const DEFAULT_MODEL = "models/gemini-embedding-001";
+const DEFAULT_DIMENSIONS = 768;
+const MAX_BATCH_SIZE = 100;
+const GEMINI_API_KEY_ENV = "CODERAG_GEMINI_API_KEY";
+const GEMINI_API_KEY_ALIAS_ENV = "CODERAG_GEMINI_AI_KEY";
 
 export interface GeminiEmbeddingConfig {
   apiKey?: string;
@@ -10,23 +14,38 @@ export interface GeminiEmbeddingConfig {
   timeoutMs?: number;
 }
 
+export const resolveGeminiApiKey = (explicitApiKey?: string): string | undefined =>
+  explicitApiKey ??
+  process.env[GEMINI_API_KEY_ENV] ??
+  process.env[GEMINI_API_KEY_ALIAS_ENV];
+
 export class GeminiEmbeddingProvider implements EmbeddingProvider {
   readonly name = "gemini";
-  readonly dimensions = 768;
+  readonly dimensions = DEFAULT_DIMENSIONS;
+  readonly maxBatchSize = MAX_BATCH_SIZE;
+  readonly model: string;
   private readonly apiKey: string;
-  private readonly model: string;
   private readonly timeoutMs: number;
 
   constructor(config?: GeminiEmbeddingConfig) {
-    const key = config?.apiKey ?? process.env.CODERAG_GEMINI_API_KEY;
+    const key = resolveGeminiApiKey(config?.apiKey);
     if (!key) {
       throw new ConfigurationError(
-        "Gemini API key required. Set CODERAG_GEMINI_API_KEY environment variable or pass apiKey in config."
+        `Gemini API key required. Set ${GEMINI_API_KEY_ENV} (or ${GEMINI_API_KEY_ALIAS_ENV}) environment variable or pass apiKey in config.`
       );
     }
     this.apiKey = key;
     this.model = config?.model ?? process.env.CODERAG_GEMINI_MODEL ?? DEFAULT_MODEL;
     this.timeoutMs = config?.timeoutMs ?? 30000;
+  }
+
+  private buildEmbedRequest(text: string) {
+    return {
+      content: {
+        parts: [{ text }]
+      },
+      outputDimensionality: this.dimensions
+    };
   }
 
   async embed(text: string): Promise<number[]> {
@@ -39,14 +58,10 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
       const response = await fetch(url, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
+          "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-          content: {
-            parts: [{ text }],
-          },
-        }),
-        signal: controller.signal,
+        body: JSON.stringify(this.buildEmbedRequest(text)),
+        signal: controller.signal
       });
 
       clearTimeout(timeoutId);
@@ -58,7 +73,7 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
         );
       }
 
-      const data = await response.json() as {
+      const data = (await response.json()) as {
         embedding?: { values?: number[] };
       };
 
@@ -81,9 +96,9 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
       return [];
     }
 
-    if (texts.length > 250) {
+    if (texts.length > MAX_BATCH_SIZE) {
       throw new Error(
-        `Batch size ${texts.length} exceeds Gemini API limit of 250. Split into smaller batches.`
+        `Batch size ${texts.length} exceeds Gemini API limit of ${MAX_BATCH_SIZE}. Split into smaller batches.`
       );
     }
 
@@ -96,16 +111,18 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
       const response = await fetch(url, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
+          "Content-Type": "application/json"
         },
         body: JSON.stringify({
           requests: texts.map((text) => ({
+            model: this.model,
             content: {
-              parts: [{ text }],
+              parts: [{ text }]
             },
-          })),
+            outputDimensionality: this.dimensions
+          }))
         }),
-        signal: controller.signal,
+        signal: controller.signal
       });
 
       clearTimeout(timeoutId);
@@ -117,7 +134,7 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
         );
       }
 
-      const data = await response.json() as {
+      const data = (await response.json()) as {
         embeddings?: Array<{ values?: number[] }>;
       };
 

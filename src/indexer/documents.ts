@@ -78,6 +78,70 @@ const readSourceText = async (
   return fileContent.split(/\r?\n/).slice(span.startLine - 1, span.endLine).join("\n");
 };
 
+type PreparedIndexedDocument = Omit<IndexedNodeDocument, "vector"> & {
+  embeddingText: string;
+};
+
+const chunkItems = <T>(items: T[], chunkSize: number): T[][] => {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+
+  return chunks;
+};
+
+const embedPreparedDocuments = async (
+  preparedDocuments: PreparedIndexedDocument[],
+  embeddingProvider: EmbeddingProvider,
+  logger?: { info: (msg: string, ctx?: Record<string, unknown>) => void }
+): Promise<IndexedNodeDocument[]> => {
+  if (preparedDocuments.length === 0) {
+    return [];
+  }
+
+  if (!embeddingProvider.embedBatch) {
+    logger?.info("Embedding documents (sequential)", { count: preparedDocuments.length });
+    const embedded: IndexedNodeDocument[] = [];
+    for (let i = 0; i < preparedDocuments.length; i += 1) {
+      const doc = preparedDocuments[i];
+      if (!doc) continue;
+      const { embeddingText, ...document } = doc;
+      embedded.push({ ...document, vector: await embeddingProvider.embed(embeddingText) });
+      if ((i + 1) % 500 === 0) {
+        logger?.info(`Embedding progress: ${i + 1}/${preparedDocuments.length}`);
+      }
+    }
+    return embedded;
+  }
+
+  const chunkSize = Math.max(1, embeddingProvider.maxBatchSize ?? preparedDocuments.length);
+  const chunks = chunkItems(preparedDocuments, chunkSize);
+  logger?.info("Embedding documents (batched)", { count: preparedDocuments.length, chunks: chunks.length, chunkSize });
+
+  // Process batches in parallel (Promise.all) instead of sequentially
+  const chunkResults = await Promise.all(
+    chunks.map(async (chunk, chunkIndex) => {
+      const vectors = await embeddingProvider.embedBatch!(chunk.map((document) => document.embeddingText));
+      if (vectors.length !== chunk.length) {
+        throw new Error("Embedding provider returned a mismatched batch size.");
+      }
+      if ((chunkIndex + 1) % 50 === 0 || chunkIndex === 0) {
+        logger?.info(`Embedding chunk ${chunkIndex + 1}/${chunks.length} complete`);
+      }
+      return chunk.map(({ embeddingText: _embeddingText, ...document }, index) => {
+        const vector = vectors[index];
+        return {
+          ...document,
+          vector: vector ?? []
+        };
+      });
+    })
+  );
+
+  return chunkResults.flat() as IndexedNodeDocument[];
+};
+
 /**
  * Builds the natural-language search document stored for a blueprint node.
  */
@@ -126,9 +190,10 @@ export const buildNodeDocument = (
 export const buildIndexedDocuments = async (
   snapshot: GraphSnapshot,
   embeddingProvider: EmbeddingProvider,
-  docsPath?: string
+  docsPath?: string,
+  logger?: { info: (msg: string, ctx?: Record<string, unknown>) => void }
 ): Promise<Record<string, IndexedNodeDocument>> => {
-  const documents: Record<string, IndexedNodeDocument> = {};
+  const preparedDocuments: PreparedIndexedDocument[] = [];
 
   for (const node of snapshot.graph.nodes) {
     const span = snapshot.sourceSpans[node.id];
@@ -147,7 +212,7 @@ export const buildIndexedDocuments = async (
       embeddingText = [doc, sourceText].filter(Boolean).join("\n\n");
     }
 
-    documents[node.id] = {
+    preparedDocuments.push({
       nodeId: node.id,
       name: node.name,
       kind: node.kind,
@@ -156,13 +221,17 @@ export const buildIndexedDocuments = async (
       signature: node.signature ?? "",
       doc,
       sourceText,
-      vector: await embeddingProvider.embed(embeddingText),
+      embeddingText,
       startLine: span.startLine,
       endLine: span.endLine
-    };
+    });
   }
 
-  return documents;
+  logger?.info("Prepared documents for embedding", { count: preparedDocuments.length });
+
+  return Object.fromEntries(
+    (await embedPreparedDocuments(preparedDocuments, embeddingProvider, logger)).map((document) => [document.nodeId, document])
+  );
 };
 
 const hashIndexedFile = async (repoPath: string, relativePath: string): Promise<[string, string]> => [
@@ -170,7 +239,29 @@ const hashIndexedFile = async (repoPath: string, relativePath: string): Promise<
   await hashFile(path.join(repoPath, relativePath))
 ];
 
-const SCHEMA_VERSION = 1;
+export const INDEX_SCHEMA_VERSION = 2;
+
+const resolveEmbeddingMetadata = (
+  embeddingProvider: Pick<EmbeddingProvider, "name" | "model" | "dimensions"> | string
+): {
+  provider: EmbeddingProviderKind;
+  model: string;
+  dimensions: number;
+} => {
+  if (typeof embeddingProvider === "string") {
+    return {
+      provider: embeddingProvider as EmbeddingProviderKind,
+      model: embeddingProvider,
+      dimensions: 256
+    };
+  }
+
+  return {
+    provider: embeddingProvider.name as EmbeddingProviderKind,
+    model: embeddingProvider.model,
+    dimensions: embeddingProvider.dimensions
+  };
+};
 
 /**
  * Builds the manifest used for incremental reindex decisions.
@@ -179,20 +270,20 @@ export const buildIndexManifest = async (
   repoPath: string,
   snapshot: GraphSnapshot,
   documents: Record<string, IndexedNodeDocument>,
-  embeddingProvider: { name: string; dimensions: number } | string = "local-hash"
+  embeddingProvider: Pick<EmbeddingProvider, "name" | "model" | "dimensions"> | string = "local-hash"
 ): Promise<IndexManifest> => {
   const uniquePaths = [...new Set(Object.values(documents).map((document) => document.filePath))];
   const fileHashes = Object.fromEntries(await Promise.all(uniquePaths.map((relativePath) => hashIndexedFile(repoPath, relativePath))));
-
-  const providerName = typeof embeddingProvider === "string" ? embeddingProvider : embeddingProvider.name;
+  const embeddingMetadata = resolveEmbeddingMetadata(embeddingProvider);
 
   return {
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: INDEX_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
     repoPath: snapshot.repoPath,
     provider: snapshot.provider,
-    embeddingProvider: providerName as EmbeddingProviderKind,
-    embeddingModel: providerName === "gemini" ? "models/gemini-embedding-2-preview" : "local-hash",
+    embeddingProvider: embeddingMetadata.provider,
+    embeddingModel: embeddingMetadata.model,
+    embeddingDimensions: embeddingMetadata.dimensions,
     nodes: Object.fromEntries(
       Object.values(documents).map((document) => [
         document.nodeId,

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { installPostCommitHook } from "./indexer/git-hook.js";
 import { createCodeRag, loadCodeRagConfig } from "./index.js";
 import { serveStdioMcpServer } from "./mcp/server.js";
+import { runSetupWizard } from "./cli/setup-wizard.js";
 import { serveHttpServer } from "./service/http.js";
 
 const JSON_FLAG = "--json";
@@ -13,6 +14,7 @@ const FLAGS_WITH_VALUES = new Set(["--config", "--depth"]);
 
 const printUsage = () => {
   console.log(`Usage:
+  coderag setup
   coderag init [--config path] [--json]
   coderag index [--config path] [--json]
   coderag reindex [--config path] [--full] [--json]
@@ -25,6 +27,18 @@ const printUsage = () => {
 const readFlagValue = (args: string[], flag: string): string | undefined => {
   const index = args.indexOf(flag);
   return index === -1 ? undefined : args[index + 1];
+};
+
+const parseDepthFlag = (value: string | undefined): number | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new Error("--depth must be a positive integer.");
+  }
+
+  return Number(value);
 };
 
 const hasFlag = (args: string[], flag: string): boolean => args.includes(flag);
@@ -97,10 +111,22 @@ export const runCli = async (argv = process.argv): Promise<void> => {
   }
 
   const configPath = readFlagValue(args, "--config");
-  const config = await loadCodeRagConfig(process.cwd(), configPath);
-  const coderag = createCodeRag(config);
+  const config = command === "setup"
+    ? null
+    : await loadCodeRagConfig(process.cwd(), configPath);
+  const coderag = config ? createCodeRag(config) : null;
 
   try {
+    if (command === "setup") {
+      await runSetupWizard(process.cwd());
+      return;
+    }
+
+    // All commands below require a loaded config and coderag instance
+    if (!config || !coderag) {
+      throw new Error("Configuration is required for this command.");
+    }
+
     if (command === "init") {
       const summary = await coderag.index();
       await installPostCommitHook(config.repoPath, configPath ?? null, config.logger);
@@ -138,8 +164,7 @@ export const runCli = async (argv = process.argv): Promise<void> => {
         throw new Error("query requires a question argument.");
       }
 
-      const depthValue = readFlagValue(args, "--depth");
-      const depth = depthValue ? Number(depthValue) : undefined;
+      const depth = parseDepthFlag(readFlagValue(args, "--depth"));
       const result = await coderag.query(question, {
         depth,
         onToken: hasFlag(args, JSON_FLAG)
@@ -161,7 +186,7 @@ export const runCli = async (argv = process.argv): Promise<void> => {
     }
 
     if (command === "serve-mcp") {
-      await serveStdioMcpServer(coderag);
+      await serveStdioMcpServer(coderag, { logger: config.logger });
       return;
     }
 
@@ -184,7 +209,7 @@ export const runCli = async (argv = process.argv): Promise<void> => {
     printUsage();
     process.exitCode = 1;
   } finally {
-    await coderag.close();
+    await coderag?.close();
   }
 };
 
