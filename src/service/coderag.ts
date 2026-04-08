@@ -2,8 +2,11 @@ import type { BlueprintNode } from "@abhinav2203/codeflow-core/schema";
 
 import { NotFoundError } from "../errors/index.js";
 import { buildContextPackage } from "../llm/context-builder.js";
-import { buildMessages } from "../llm/prompt.js";
+import { buildMessages, buildMultiHopMessages } from "../llm/prompt.js";
+import { buildMultiHopContextPackage } from "../llm/multi-hop-context-builder.js";
 import { RepoIndexer } from "../indexer/indexer.js";
+import { decomposeQuestionWithFallback } from "../retrieval/decompose.js";
+import { multiHopRetrieve } from "../retrieval/multi-hop.js";
 import { rerankResults, searchDocuments } from "../retrieval/search.js";
 import { traverseDependencies } from "../retrieval/traversal.js";
 import { FileCache } from "../store/file-cache.js";
@@ -232,6 +235,21 @@ export class CodeRag {
       throw new NotFoundError("No embedding provider is configured.");
     }
 
+    const depth = Math.min(options.depth ?? this.config.traversal.defaultDepth, this.config.traversal.maxDepth);
+    const answerMode: QueryResult["answerMode"] =
+      options.includeAnswer === false || !this.config.llm.enabled || !this.config.llmTransport ? "context-only" : "llm";
+
+    // Decide whether to use multi-hop retrieval
+    const useMultiHop =
+      options.multiHop === true &&
+      this.config.multiHop.enabled &&
+      answerMode === "llm";
+
+    if (useMultiHop) {
+      return this.queryMultiHop(question, answerMode, options, snapshot, documents, embeddingProvider, depth);
+    }
+
+    // Single-retrieval path
     const searchResults = rerankResults(
       question,
       await searchDocuments(
@@ -247,12 +265,9 @@ export class CodeRag {
     const primaryNode = primaryDocument
       ? snapshot.graph.nodes.find((node) => node.id === primaryDocument.nodeId)
       : undefined;
-    const depth = Math.min(options.depth ?? this.config.traversal.defaultDepth, this.config.traversal.maxDepth);
     const { dependencies, dependents } = primaryNode
       ? traverseDependencies(snapshot, primaryNode.id, depth)
       : { dependencies: [], dependents: [] };
-    const answerMode: QueryResult["answerMode"] =
-      options.includeAnswer === false || !this.config.llm.enabled || !this.config.llmTransport ? "context-only" : "llm";
     const context = await buildContextPackage(
       question,
       this.config.repoPath,
@@ -270,6 +285,7 @@ export class CodeRag {
       return {
         question,
         answerMode,
+        retrievalMode: "single",
         answer: fallbackAnswerFromContext(context),
         context
       };
@@ -289,6 +305,75 @@ export class CodeRag {
     return {
       question,
       answerMode,
+      retrievalMode: "single",
+      answer: llmResponse.answer,
+      context
+    };
+  }
+
+  /**
+   * Multi-hop retrieval: decompose question, parallel retrieve, synthesize.
+   */
+  private async queryMultiHop(
+    question: string,
+    answerMode: QueryResult["answerMode"],
+    options: QueryOptions,
+    snapshot: NonNullable<typeof this.loadedState>["snapshot"],
+    documents: NonNullable<typeof this.loadedState>["documents"],
+    embeddingProvider: NonNullable<typeof this.config.embeddingProvider>,
+    depth: number
+  ): Promise<QueryResult> {
+    // Stage 1: Decompose
+    const subQuestions = await decomposeQuestionWithFallback(
+      question,
+      this.config.llmTransport ?? undefined,
+      this.config.multiHop,
+      this.config.llm.model
+    );
+
+    if (!subQuestions || subQuestions.length < 2) {
+      // Fall back to single retrieval if decomposition fails
+      return this.query(question, { ...options, multiHop: false });
+    }
+
+    // Stage 2: Parallel retrieve
+    const retrievalResult = await multiHopRetrieve(
+      subQuestions,
+      documents,
+      embeddingProvider,
+      this.config.retrieval,
+      snapshot,
+      this.config.vectorStore,
+      this.config.multiHop.expansionDepth
+    );
+
+    // Stage 3: Context assembly + synthesis
+    const context = await buildMultiHopContextPackage(
+      question,
+      subQuestions,
+      retrievalResult,
+      this.config.repoPath,
+      snapshot,
+      documents,
+      this.config.retrieval,
+      this.fileCache
+    );
+
+    const llmResponse = await this.config.llmTransport!.generate(
+      {
+        question,
+        model: this.config.llm.model,
+        stream: Boolean(options.onToken),
+        context,
+        messages: buildMultiHopMessages(question, context)
+      },
+      options.onToken
+    );
+
+    return {
+      question,
+      answerMode,
+      retrievalMode: "multi-hop",
       answer: llmResponse.answer,
       context
     };

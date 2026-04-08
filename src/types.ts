@@ -10,6 +10,14 @@ export type LlmTransportKind = z.infer<typeof llmTransportKindSchema>;
 export const embeddingProviderKindSchema = z.enum(["local-hash", "gemini", "onnx"]);
 export type EmbeddingProviderKind = z.infer<typeof embeddingProviderKindSchema>;
 
+export const multiHopConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  minQuestionLength: z.number().int().positive().default(25),
+  maxSubQuestions: z.number().int().min(2).max(10).default(5),
+  expansionDepth: z.number().int().min(0).max(3).default(1)
+});
+export type MultiHopConfig = z.infer<typeof multiHopConfigSchema>;
+
 export const retrievalConfigSchema = z.object({
   topK: z.number().int().positive().default(6),
   rerankK: z.number().int().positive().default(3),
@@ -73,6 +81,12 @@ export const serializableConfigSchema = z.object({
     topK: 6,
     rerankK: 3,
     maxContextChars: 16000
+  }),
+  multiHop: multiHopConfigSchema.default({
+    enabled: false,
+    minQuestionLength: 25,
+    maxSubQuestions: 5,
+    expansionDepth: 1
   }),
   traversal: traversalConfigSchema.default({
     defaultDepth: 1,
@@ -295,10 +309,13 @@ export interface IndexManifest {
   fileHashes: Record<string, string>;
 }
 
+export type RetrievalMode = "single" | "multi-hop";
+
 export interface QueryOptions {
   depth?: number;
   includeAnswer?: boolean;
   onToken?: (token: string) => void;
+  multiHop?: boolean;
 }
 
 export type AnswerMode = "llm" | "context-only";
@@ -313,21 +330,34 @@ export interface RetrievedNodeContext {
   endLine: number;
   callSiteLines: number[];
   doc: string;
-  relationship: "primary" | "calls" | "called-by";
+  relationship: "primary" | "calls" | "called-by" | "multi-hop";
+  /** Which sub-question (if any) led to this node being retrieved. */
+  subQuestionIndex?: number;
 }
 
 export interface ContextPackage {
   question: string;
   answerMode: AnswerMode;
+  retrievalMode: RetrievalMode;
   primaryNode: RetrievedNodeContext | null;
   relatedNodes: RetrievedNodeContext[];
   graphSummary: string;
   warnings: string[];
+  /** Sub-questions used for multi-hop retrieval (only present in multi-hop mode). */
+  subQuestions?: string[];
+  /** Per-sub-question retrieval metadata (only present in multi-hop mode). */
+  subQuestionResults?: Array<{
+    question: string;
+    primaryNodeId: string | null;
+    relatedNodeCount: number;
+    filesReferenced: string[];
+  }>;
 }
 
 export interface QueryResult {
   question: string;
   answerMode: AnswerMode;
+  retrievalMode: RetrievalMode;
   answer: string;
   context: ContextPackage;
 }
@@ -352,6 +382,24 @@ export interface ImpactResult {
   node: BlueprintNode;
   impactedNodes: BlueprintNode[];
   graphSummary: string;
+}
+
+export interface DecompositionResult {
+  subQuestions: string[];
+  reasoning: string;
+}
+
+export interface MultiHopRetrievalResult {
+  subQuestions: string[];
+  primaryNodes: Array<BlueprintNode | undefined>;
+  expandedNodes: BlueprintNode[];
+  deduplicatedNodes: BlueprintNode[];
+  retrievalMetadata: Array<{
+    subQuestion: string;
+    primaryNode: BlueprintNode | undefined;
+    relatedNodes: BlueprintNode[];
+    filesReferenced: string[];
+  }>;
 }
 
 export interface IndexSummary {

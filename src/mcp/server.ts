@@ -46,11 +46,12 @@ export const createMcpServer = (coderag: CodeRag): McpServer => {
       description: "Answer a natural-language question about the indexed repository.",
       inputSchema: {
         question: z.string().min(1),
-        depth: DEPTH_SCHEMA
+        depth: DEPTH_SCHEMA,
+        multiHop: z.boolean().optional()
       }
     },
-    async ({ question, depth }) => ({
-      content: [{ type: "text", text: serialize(await coderag.query(question, { depth })) }]
+    async ({ question, depth, multiHop }) => ({
+      content: [{ type: "text", text: serialize(await coderag.query(question, { depth, multiHop })) }]
     })
   );
 

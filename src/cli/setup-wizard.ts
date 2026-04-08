@@ -173,6 +173,12 @@ export const runSetupWizard = async (cwd: string, logger?: Logger): Promise<void
       rerankK: 3,
       maxContextChars: 16000
     },
+    multiHop: {
+      enabled: false,
+      minQuestionLength: 25,
+      maxSubQuestions: 5,
+      expansionDepth: 1
+    },
     traversal: {
       defaultDepth: 1,
       maxDepth: 3

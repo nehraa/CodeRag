@@ -156,6 +156,13 @@ export const loadSerializableConfig = async (cwd: string, configPath?: string): 
       rerankK: parseNumber(process.env.CODERAG_RERANK_K) ?? baseConfig.retrieval.rerankK,
       maxContextChars: parseNumber(process.env.CODERAG_MAX_CONTEXT_CHARS) ?? baseConfig.retrieval.maxContextChars
     },
+    multiHop: {
+      ...baseConfig.multiHop,
+      enabled: parseBoolean(process.env.CODERAG_MULTI_HOP_ENABLED) ?? baseConfig.multiHop.enabled,
+      minQuestionLength: parseNumber(process.env.CODERAG_MULTI_HOP_MIN_QUESTION_LENGTH) ?? baseConfig.multiHop.minQuestionLength,
+      maxSubQuestions: parseNumber(process.env.CODERAG_MULTI_HOP_MAX_QUESTIONS) ?? baseConfig.multiHop.maxSubQuestions,
+      expansionDepth: parseNumber(process.env.CODERAG_MULTI_HOP_EXPANSION_DEPTH) ?? baseConfig.multiHop.expansionDepth
+    },
     traversal: {
       ...baseConfig.traversal,
       defaultDepth: parseNumber(process.env.CODERAG_DEFAULT_DEPTH) ?? baseConfig.traversal.defaultDepth,
@@ -271,6 +278,10 @@ export const loadCodeRagConfig = async (cwd: string, configPath?: string): Promi
 
   if (runtimeConfig.traversal.defaultDepth > runtimeConfig.traversal.maxDepth) {
     throw new ConfigurationError("traversal.defaultDepth must be less than or equal to traversal.maxDepth.");
+  }
+
+  if (runtimeConfig.multiHop.expansionDepth > runtimeConfig.traversal.maxDepth) {
+    throw new ConfigurationError("multiHop.expansionDepth must be less than or equal to traversal.maxDepth.");
   }
 
   return {

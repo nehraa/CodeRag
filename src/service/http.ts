@@ -15,7 +15,8 @@ const depthSchema = z.number().int().min(0).optional();
 const queryBodySchema = z.object({
   question: z.string().min(1),
   depth: depthSchema,
-  includeAnswer: z.boolean().optional()
+  includeAnswer: z.boolean().optional(),
+  multiHop: z.boolean().optional()
 });
 const identifierBodySchema = z.object({
   identifier: z.string().min(1),
@@ -195,7 +196,8 @@ const createQueryHandler = (coderag: CodeRag): HttpRouteHandler => async (reques
   const body = await readJsonBody(request, queryBodySchema);
   const result = await coderag.query(body.question, {
     depth: body.depth,
-    includeAnswer: body.includeAnswer
+    includeAnswer: body.includeAnswer,
+    multiHop: body.multiHop
   });
   writeJson(request, response, 200, requestId, { data: result, requestId });
 };

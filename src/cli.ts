@@ -11,6 +11,7 @@ import { serveHttpServer } from "./service/http.js";
 
 const JSON_FLAG = "--json";
 const FLAGS_WITH_VALUES = new Set(["--config", "--depth"]);
+const FLAGS_BOOLEAN = new Set(["--json", "--full", "--multi-hop"]);
 
 const printUsage = () => {
   console.log(`Usage:
@@ -18,7 +19,7 @@ const printUsage = () => {
   coderag init [--config path] [--json]
   coderag index [--config path] [--json]
   coderag reindex [--config path] [--full] [--json]
-  coderag query "question" [--config path] [--depth 2] [--json]
+  coderag query "question" [--config path] [--depth 2] [--multi-hop] [--json]
   coderag serve-mcp [--config path]
   coderag serve-http [--config path]
   coderag doctor [--config path] [--json]`);
@@ -57,6 +58,7 @@ const readPositionals = (args: string[]): string[] => {
         index += 1;
       }
 
+      // Boolean flags don't consume a value, just skip
       continue;
     }
 
@@ -165,8 +167,10 @@ export const runCli = async (argv = process.argv): Promise<void> => {
       }
 
       const depth = parseDepthFlag(readFlagValue(args, "--depth"));
+      const multiHop = hasFlag(args, "--multi-hop");
       const result = await coderag.query(question, {
         depth,
+        multiHop,
         onToken: hasFlag(args, JSON_FLAG)
           ? undefined
           : (token) => {
