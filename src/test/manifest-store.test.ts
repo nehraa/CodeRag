@@ -24,17 +24,25 @@ describe("ManifestStore", () => {
     const store = new ManifestStore(storageRoot);
 
     await store.saveManifest({
+      schemaVersion: 2,
       generatedAt: "2026-04-01T00:00:00.000Z",
       repoPath: "/repo",
       provider: "test",
+      embeddingProvider: "local-hash",
+      embeddingModel: "local-hash",
+      embeddingDimensions: 256,
       nodes: {},
       fileHashes: {}
     });
 
     expect(await store.loadManifest()).toEqual({
+      schemaVersion: 2,
       generatedAt: "2026-04-01T00:00:00.000Z",
       repoPath: "/repo",
       provider: "test",
+      embeddingProvider: "local-hash",
+      embeddingModel: "local-hash",
+      embeddingDimensions: 256,
       nodes: {},
       fileHashes: {}
     });

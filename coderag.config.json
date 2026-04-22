@@ -1,0 +1,25 @@
+{
+  "repoPath": ".",
+  "storageRoot": ".coderag",
+  "retrieval": {
+    "topK": 6,
+    "rerankK": 3,
+    "maxContextChars": 16000
+  },
+  "traversal": {
+    "defaultDepth": 1,
+    "maxDepth": 3
+  },
+  "embedding": {
+    "provider": "onnx",
+    "onnxModelDir": ".coderag-models/models"
+  },
+  "llm": {
+    "enabled": true,
+    "transport": "openai-compatible",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "model": "stepfun/step-3.5-flash",
+    "apiKey": "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",
+    "timeoutMs": 45000
+  }
+}

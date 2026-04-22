@@ -141,6 +141,7 @@ export const buildContextPackage = async (
   return {
     question,
     answerMode,
+    retrievalMode: "single" as const,
     primaryNode: primaryResult.primaryContext,
     relatedNodes: relatedResult.relatedContexts,
     graphSummary: buildGraphSummary(primaryNode, dependencies, dependents),

@@ -27,3 +27,6 @@ New indexing, retrieval, transport, or MCP behavior must include direct coverage
 
 8. Document operator setup.
 Any required setup for local model servers, storage locations, or git hooks must be reflected in `README.md`.
+
+9. Preserve future-ready features behind flags.
+If a feature is correctly implemented but blocked by external platform constraints (not code errors), gate it behind an optional config flag rather than removing it. This keeps the codebase ready for when platform support arrives. Document the flag and its current support status in `README.md`.

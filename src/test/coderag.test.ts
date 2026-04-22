@@ -341,6 +341,9 @@ export function getAdminSession(rawToken: string): { adminId: string } {
 
     expect(status.indexed).toBe(false);
     expect(status.provider).toBe("codeflow-core");
+    expect(status.embeddingProvider).toBe("local-hash");
+    expect(status.embeddingModel).toBe("local-hash");
+    expect(status.embeddingDimensions).toBe(256);
 
     await coderag.close();
   });
@@ -350,10 +353,14 @@ export function getAdminSession(rawToken: string): { adminId: string } {
     createdPaths.push(repoPath);
     const config = createRuntimeConfig(repoPath);
     config.graphProvider = undefined;
+    config.embeddingProvider = undefined;
     const coderag = createCodeRag(config);
     const status = await coderag.status();
 
     expect(status.provider).toBeNull();
+    expect(status.embeddingProvider).toBe("unknown");
+    expect(status.embeddingModel).toBe("unknown");
+    expect(status.embeddingDimensions).toBe(0);
     await coderag.close();
   });
 

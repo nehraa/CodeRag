@@ -7,8 +7,16 @@ export type CustomHttpFormat = z.infer<typeof customHttpFormatSchema>;
 export const llmTransportKindSchema = z.enum(["openai-compatible", "custom-http"]);
 export type LlmTransportKind = z.infer<typeof llmTransportKindSchema>;
 
-export const embeddingProviderKindSchema = z.enum(["local-hash", "gemini"]);
+export const embeddingProviderKindSchema = z.enum(["local-hash", "gemini", "onnx"]);
 export type EmbeddingProviderKind = z.infer<typeof embeddingProviderKindSchema>;
+
+export const multiHopConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  minQuestionLength: z.number().int().positive().default(25),
+  maxSubQuestions: z.number().int().min(2).max(10).default(5),
+  expansionDepth: z.number().int().min(0).max(3).default(1)
+});
+export type MultiHopConfig = z.infer<typeof multiHopConfigSchema>;
 
 export const retrievalConfigSchema = z.object({
   topK: z.number().int().positive().default(6),
@@ -53,8 +61,9 @@ export type LlmConfig = SerializableLlmConfig;
 export const embeddingConfigSchema = z.object({
   provider: embeddingProviderKindSchema.default("local-hash"),
   dimensions: z.number().int().positive().default(256),
-  geminiModel: z.string().min(1).default("models/gemini-embedding-2-preview"),
-  timeoutMs: z.number().int().positive().default(30000)
+  geminiModel: z.string().min(1).default("models/gemini-embedding-001"),
+  timeoutMs: z.number().int().positive().default(30000),
+  onnxModelDir: z.string().min(1).default(".coderag-models/models")
 });
 export type EmbeddingConfig = z.infer<typeof embeddingConfigSchema>;
 
@@ -64,13 +73,20 @@ export const serializableConfigSchema = z.object({
   embedding: embeddingConfigSchema.default({
     provider: "local-hash",
     dimensions: 256,
-    geminiModel: "models/gemini-embedding-2-preview",
-    timeoutMs: 30000
+    geminiModel: "models/gemini-embedding-001",
+    timeoutMs: 30000,
+    onnxModelDir: ".coderag-models/models"
   }),
   retrieval: retrievalConfigSchema.default({
     topK: 6,
     rerankK: 3,
     maxContextChars: 16000
+  }),
+  multiHop: multiHopConfigSchema.default({
+    enabled: false,
+    minQuestionLength: 25,
+    maxSubQuestions: 5,
+    expansionDepth: 1
   }),
   traversal: traversalConfigSchema.default({
     defaultDepth: 1,
@@ -95,6 +111,137 @@ export const serializableConfigSchema = z.object({
   docsPath: z.string().optional()
 });
 export type SerializableCodeRagConfig = z.infer<typeof serializableConfigSchema>;
+
+const persistedNodeKindSchema = z.custom<BlueprintNodeKind>(
+  (value) => typeof value === "string" && value.length > 0,
+  "Expected a non-empty blueprint node kind."
+);
+
+const persistedContractFieldSchema = z.object({
+  name: z.string().min(1),
+  type: z.string().min(1),
+  description: z.string().optional()
+});
+
+const persistedSourceRefSchema = z
+  .object({
+    kind: z.string().min(1),
+    path: z.string().optional(),
+    symbol: z.string().optional(),
+    section: z.string().optional(),
+    detail: z.string().optional()
+  })
+  .passthrough();
+
+const persistedContractSchema = z
+  .object({
+    responsibilities: z.array(z.string()).default([]),
+    inputs: z.array(persistedContractFieldSchema).default([]),
+    outputs: z.array(persistedContractFieldSchema).default([]),
+    dependencies: z.array(z.string()).default([])
+  })
+  .passthrough();
+
+export const sourceSpanSchema = z.object({
+  nodeId: z.string().min(1),
+  filePath: z.string().min(1),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  symbol: z.string().optional()
+});
+
+export const callSiteSchema = z.object({
+  edgeKey: z.string().min(1),
+  fromNodeId: z.string().min(1),
+  toNodeId: z.string().min(1),
+  filePath: z.string().min(1),
+  lineNumbers: z.array(z.number().int().positive()),
+  expressions: z.array(z.string())
+});
+
+export const indexedNodeDocumentSchema = z.object({
+  nodeId: z.string().min(1),
+  name: z.string().min(1),
+  kind: persistedNodeKindSchema,
+  filePath: z.string().min(1),
+  summary: z.string(),
+  signature: z.string().optional(),
+  doc: z.string(),
+  sourceText: z.string().optional(),
+  vector: z.array(z.number()),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive()
+});
+
+const persistedBlueprintNodeSchema = z
+  .object({
+    id: z.string().min(1),
+    kind: persistedNodeKindSchema,
+    name: z.string().min(1),
+    summary: z.string(),
+    path: z.string().optional(),
+    signature: z.string().optional(),
+    contract: persistedContractSchema,
+    sourceRefs: z.array(persistedSourceRefSchema).default([])
+  })
+  .passthrough();
+
+const persistedBlueprintEdgeSchema = z
+  .object({
+    from: z.string().min(1),
+    to: z.string().min(1),
+    kind: z.string().min(1)
+  })
+  .passthrough();
+
+const persistedBlueprintGraphSchema = z
+  .object({
+    projectName: z.string().min(1),
+    mode: z.enum(["essential", "yolo"]),
+    phase: z.enum(["spec", "implementation", "integration"]),
+    generatedAt: z.string().min(1),
+    nodes: z.array(persistedBlueprintNodeSchema),
+    edges: z.array(persistedBlueprintEdgeSchema),
+    workflows: z.array(z.unknown()).default([]),
+    warnings: z.array(z.string()).default([])
+  })
+  .passthrough();
+
+export const graphSnapshotSchema = z.object({
+  provider: z.string().min(1),
+  repoPath: z.string().min(1),
+  generatedAt: z.string().min(1),
+  graph: persistedBlueprintGraphSchema,
+  sourceSpans: z.record(z.string(), sourceSpanSchema),
+  callSites: z.record(z.string(), callSiteSchema)
+});
+
+export const indexManifestNodeEntrySchema = z.object({
+  nodeId: z.string().min(1),
+  filePath: z.string().min(1),
+  docHash: z.string().min(1),
+  fileHash: z.string().min(1)
+});
+
+export const indexManifestSchema = z.object({
+  schemaVersion: z.number().int().positive(),
+  generatedAt: z.string().min(1),
+  repoPath: z.string().min(1),
+  provider: z.string().min(1),
+  embeddingProvider: embeddingProviderKindSchema,
+  embeddingModel: z.string().min(1),
+  embeddingDimensions: z.number().int().positive(),
+  nodes: z.record(z.string(), indexManifestNodeEntrySchema),
+  fileHashes: z.record(z.string(), z.string().min(1))
+});
+
+export const vectorStoreMetadataSchema = z.object({
+  schemaVersion: z.number().int().positive(),
+  embeddingProvider: embeddingProviderKindSchema,
+  embeddingModel: z.string().min(1),
+  embeddingDimensions: z.number().int().positive(),
+  generatedAt: z.string().min(1).optional()
+});
 
 export interface Logger {
   debug(message: string, context?: Record<string, unknown>): void;
@@ -157,14 +304,18 @@ export interface IndexManifest {
   provider: string;
   embeddingProvider: EmbeddingProviderKind;
   embeddingModel: string;
+  embeddingDimensions: number;
   nodes: Record<string, IndexManifestNodeEntry>;
   fileHashes: Record<string, string>;
 }
+
+export type RetrievalMode = "single" | "multi-hop";
 
 export interface QueryOptions {
   depth?: number;
   includeAnswer?: boolean;
   onToken?: (token: string) => void;
+  multiHop?: boolean;
 }
 
 export type AnswerMode = "llm" | "context-only";
@@ -179,21 +330,34 @@ export interface RetrievedNodeContext {
   endLine: number;
   callSiteLines: number[];
   doc: string;
-  relationship: "primary" | "calls" | "called-by";
+  relationship: "primary" | "calls" | "called-by" | "multi-hop";
+  /** Which sub-question (if any) led to this node being retrieved. */
+  subQuestionIndex?: number;
 }
 
 export interface ContextPackage {
   question: string;
   answerMode: AnswerMode;
+  retrievalMode: RetrievalMode;
   primaryNode: RetrievedNodeContext | null;
   relatedNodes: RetrievedNodeContext[];
   graphSummary: string;
   warnings: string[];
+  /** Sub-questions used for multi-hop retrieval (only present in multi-hop mode). */
+  subQuestions?: string[];
+  /** Per-sub-question retrieval metadata (only present in multi-hop mode). */
+  subQuestionResults?: Array<{
+    question: string;
+    primaryNodeId: string | null;
+    relatedNodeCount: number;
+    filesReferenced: string[];
+  }>;
 }
 
 export interface QueryResult {
   question: string;
   answerMode: AnswerMode;
+  retrievalMode: RetrievalMode;
   answer: string;
   context: ContextPackage;
 }
@@ -220,6 +384,24 @@ export interface ImpactResult {
   graphSummary: string;
 }
 
+export interface DecompositionResult {
+  subQuestions: string[];
+  reasoning: string;
+}
+
+export interface MultiHopRetrievalResult {
+  subQuestions: string[];
+  primaryNodes: Array<BlueprintNode | undefined>;
+  expandedNodes: BlueprintNode[];
+  deduplicatedNodes: BlueprintNode[];
+  retrievalMetadata: Array<{
+    subQuestion: string;
+    primaryNode: BlueprintNode | undefined;
+    relatedNodes: BlueprintNode[];
+    filesReferenced: string[];
+  }>;
+}
+
 export interface IndexSummary {
   graph: BlueprintGraph;
   manifest: IndexManifest;
@@ -229,8 +411,11 @@ export interface IndexSummary {
 
 export interface EmbeddingProvider {
   readonly name: string;
+  readonly model: string;
   readonly dimensions: number;
+  readonly maxBatchSize?: number;
   embed(text: string): Promise<number[]>;
+  embedBatch?(texts: string[]): Promise<number[][]>;
 }
 
 export interface VectorStore {
@@ -274,4 +459,5 @@ export interface CodeRagConfig extends SerializableCodeRagConfig {
   vectorStore?: VectorStore;
   graphProvider?: GraphProvider;
   llmTransport?: LlmTransport;
+  configPath?: string;
 }

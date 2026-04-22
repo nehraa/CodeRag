@@ -1,5 +1,8 @@
+import fs from "node:fs/promises";
+
 import { describe, expect, it } from "vitest";
 
+import { IndexingError } from "../errors/index.js";
 import { LanceVectorStore, fromRow, toRow } from "../store/vector-store.js";
 import { cleanupPaths, createTempDir } from "./helpers.js";
 
@@ -44,8 +47,10 @@ describe("LanceVectorStore", () => {
     expect(await store.get("missing")).toBeNull();
     expect(await store.getMany([])).toEqual([]);
     expect(await store.getAllRows()).toEqual([]);
+    expect(await store.getMetadata()).toBeNull();
     await store.reset([]);
     await store.deleteByNodeIds(["missing"]);
+    await store.clear();
     await store.close();
 
     await cleanupPaths([storageRoot]);
@@ -92,6 +97,57 @@ describe("LanceVectorStore", () => {
 
     expect((await store.get("session"))?.nodeId).toBe("session");
     expect(await store.get("auth")).toBeNull();
+
+    await store.close();
+    await cleanupPaths([storageRoot]);
+  });
+
+  it("queries requested ids directly instead of depending on a prefix scan", async () => {
+    const storageRoot = await createTempDir("coderag-lancedb-");
+    const store = new LanceVectorStore(storageRoot);
+    const records = Array.from({ length: 40 }, (_, index) => ({
+      ...record,
+      nodeId: `node-${index + 1}`,
+      name: `node${index + 1}`,
+      filePath: `src/node-${index + 1}.ts`
+    }));
+
+    await store.reset(records);
+
+    const fetched = await store.getMany(["node-40", "node-1"]);
+
+    expect(fetched.map((entry) => entry.nodeId)).toEqual(["node-40", "node-1"]);
+
+    await store.close();
+    await cleanupPaths([storageRoot]);
+  });
+
+  it("throws when vector store metadata is present but invalid", async () => {
+    const storageRoot = await createTempDir("coderag-lancedb-");
+    const store = new LanceVectorStore(storageRoot);
+
+    await store.setMetadata({ ok: true });
+    const metadataPath = `${storageRoot}/lancedb/store-metadata.json`;
+    await fs.writeFile(metadataPath, "{", "utf8");
+
+    await expect(store.getMetadata()).rejects.toThrow(IndexingError);
+
+    await store.close();
+    await cleanupPaths([storageRoot]);
+  });
+
+  it("clears stored rows and metadata", async () => {
+    const storageRoot = await createTempDir("coderag-lancedb-");
+    const store = new LanceVectorStore(storageRoot);
+
+    expect(await store.getMetadata()).toBeNull();
+
+    await store.reset([record]);
+    await store.setMetadata({ schemaVersion: 2, embeddingProvider: "local-hash" });
+    await store.clear();
+
+    expect(await store.get("auth")).toBeNull();
+    expect(await store.getMetadata()).toBeNull();
 
     await store.close();
     await cleanupPaths([storageRoot]);

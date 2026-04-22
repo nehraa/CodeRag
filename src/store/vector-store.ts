@@ -3,13 +3,18 @@ import path from "node:path";
 
 import * as lancedb from "@lancedb/lancedb";
 
+import { IndexingError } from "../errors/index.js";
 import type { IndexedNodeDocument, VectorStore } from "../types.js";
 import { ensureDir, fileExists, readJson, writeJson } from "../utils/filesystem.js";
 
 const TABLE_NAME = "node_documents";
 const METADATA_FILE = "store-metadata.json";
 
-const DELETE_ALL_FILTER = "\"nodeId\" IS NOT NULL";
+const DELETE_ALL_FILTER = "`nodeId` IS NOT NULL";
+
+const toSqlStringLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+
+const createNodeIdFilter = (nodeIds: string[]): string => `\`nodeId\` IN (${nodeIds.map(toSqlStringLiteral).join(", ")})`;
 
 export const toRow = (record: IndexedNodeDocument): Record<string, unknown> => ({
   nodeId: record.nodeId,
@@ -109,13 +114,16 @@ export class LanceVectorStore implements VectorStore {
       return;
     }
 
-    const remainingRows = (await this.getAllRows()).filter((row) => !nodeIds.includes(row.nodeId));
-    if (remainingRows.length === 0) {
-      await table.delete(DELETE_ALL_FILTER);
+    if (nodeIds.length >= 100) {
+      // For large deletes, use native delete — much faster than reading all rows
+      const filter = createNodeIdFilter(nodeIds);
+      await table.delete(filter);
       return;
     }
 
-    await table.add(remainingRows.map(toRow), { mode: "overwrite" });
+    // For small deletes, still use native delete
+    const filter = createNodeIdFilter(nodeIds);
+    await table.delete(filter);
   }
 
   async upsert(records: IndexedNodeDocument[]): Promise<void> {
@@ -129,12 +137,11 @@ export class LanceVectorStore implements VectorStore {
       return;
     }
 
-    const mergedRows = new Map((await this.getAllRows()).map((row) => [row.nodeId, row]));
-    for (const record of records) {
-      mergedRows.set(record.nodeId, record);
-    }
-
-    await table.add([...mergedRows.values()].map(toRow), { mode: "overwrite" });
+    // Delete existing rows for the nodeIds we're updating, then add new records
+    const nodeIds = records.map((record) => record.nodeId);
+    const filter = createNodeIdFilter(nodeIds);
+    await table.delete(filter);
+    await table.add(records.map(toRow));
   }
 
   async search(queryVector: number[], limit: number): Promise<IndexedNodeDocument[]> {
@@ -162,9 +169,14 @@ export class LanceVectorStore implements VectorStore {
       return [];
     }
 
-    const rows = await table.query().limit(Math.max(nodeIds.length * 8, 32)).toArray();
-    const requestedNodeIds = new Set(nodeIds);
-    return rows.map((row) => fromRow(row as Record<string, unknown>)).filter((row) => requestedNodeIds.has(row.nodeId));
+    const rows = await table.query().where(createNodeIdFilter(nodeIds)).toArray();
+    const rowsByNodeId = new Map(
+      rows.map((row) => fromRow(row as Record<string, unknown>)).map((row) => [row.nodeId, row])
+    );
+
+    return nodeIds
+      .map((nodeId) => rowsByNodeId.get(nodeId))
+      .filter((row): row is IndexedNodeDocument => Boolean(row));
   }
 
   async close(): Promise<void> {
@@ -185,8 +197,8 @@ export class LanceVectorStore implements VectorStore {
     }
     try {
       return await readJson<T>(metadataPath);
-    } catch {
-      return null;
+    } catch (error) {
+      throw new IndexingError("Failed to read vector store metadata.", { metadataPath }, { cause: error });
     }
   }
 

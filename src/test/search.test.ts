@@ -11,6 +11,7 @@ import { embedTextDeterministically } from "../utils/text.js";
 
 class TestEmbeddingProvider implements EmbeddingProvider {
   readonly name = "test";
+  readonly model = "test-model";
   readonly dimensions = 32;
 
   async embed(text: string): Promise<number[]> {

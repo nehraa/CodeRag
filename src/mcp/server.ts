@@ -3,10 +3,32 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import type { CodeRag } from "../service/coderag.js";
+import type { Logger } from "../types.js";
 
 const serialize = (value: unknown): string => JSON.stringify(value, null, 2);
 
 const DEPTH_SCHEMA = z.number().int().min(0).optional();
+
+/**
+ * Checks whether the index is stale and triggers an auto-index if needed.
+ */
+const ensureIndexIsCurrent = async (coderag: CodeRag, logger?: Logger): Promise<void> => {
+  const status = await coderag.status();
+
+  if (!status.indexed) {
+    logger?.info("MCP startup: no index found, running initial index.");
+    await coderag.index();
+    return;
+  }
+
+  if (status.modelMismatch === true) {
+    logger?.info("MCP startup: embedding model mismatch detected, running full reindex.");
+    await coderag.reindex({ full: true });
+    return;
+  }
+
+  logger?.debug("MCP startup: index is current, no reindex needed.");
+};
 
 /**
  * Creates the stdio MCP server that exposes CodeRag retrieval tools.
@@ -14,7 +36,7 @@ const DEPTH_SCHEMA = z.number().int().min(0).optional();
 export const createMcpServer = (coderag: CodeRag): McpServer => {
   const server = new McpServer({
     name: "coderag",
-    version: "0.1.0"
+    version: "0.2.1"
   });
 
   server.registerTool(
@@ -24,11 +46,12 @@ export const createMcpServer = (coderag: CodeRag): McpServer => {
       description: "Answer a natural-language question about the indexed repository.",
       inputSchema: {
         question: z.string().min(1),
-        depth: DEPTH_SCHEMA
+        depth: DEPTH_SCHEMA,
+        multiHop: z.boolean().optional()
       }
     },
-    async ({ question, depth }) => ({
-      content: [{ type: "text", text: serialize(await coderag.query(question, { depth })) }]
+    async ({ question, depth, multiHop }) => ({
+      content: [{ type: "text", text: serialize(await coderag.query(question, { depth, multiHop })) }]
     })
   );
 
@@ -93,8 +116,10 @@ export const createMcpServer = (coderag: CodeRag): McpServer => {
 
 /**
  * Connects the CodeRag MCP server to stdio for local tool execution.
+ * Auto-indexes on startup if the index is missing or stale.
  */
-export const serveStdioMcpServer = async (coderag: CodeRag): Promise<void> => {
+export const serveStdioMcpServer = async (coderag: CodeRag, options?: { logger?: Logger }): Promise<void> => {
+  await ensureIndexIsCurrent(coderag, options?.logger);
   const server = createMcpServer(coderag);
   const transport = new StdioServerTransport();
   await server.connect(transport);

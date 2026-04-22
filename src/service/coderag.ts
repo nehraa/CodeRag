@@ -2,8 +2,11 @@ import type { BlueprintNode } from "@abhinav2203/codeflow-core/schema";
 
 import { NotFoundError } from "../errors/index.js";
 import { buildContextPackage } from "../llm/context-builder.js";
-import { buildMessages } from "../llm/prompt.js";
+import { buildMessages, buildMultiHopMessages } from "../llm/prompt.js";
+import { buildMultiHopContextPackage } from "../llm/multi-hop-context-builder.js";
 import { RepoIndexer } from "../indexer/indexer.js";
+import { decomposeQuestionWithFallback } from "../retrieval/decompose.js";
+import { multiHopRetrieve } from "../retrieval/multi-hop.js";
 import { rerankResults, searchDocuments } from "../retrieval/search.js";
 import { traverseDependencies } from "../retrieval/traversal.js";
 import { FileCache } from "../store/file-cache.js";
@@ -52,7 +55,7 @@ export class CodeRag {
   private loadedState?: LoadedState;
 
   constructor(private readonly config: CodeRagConfig) {
-    this.indexer = new RepoIndexer(config);
+    this.indexer = new RepoIndexer(config, config.configPath);
     this.manifestStore = new ManifestStore(config.storageRoot);
   }
 
@@ -62,10 +65,9 @@ export class CodeRag {
     return state;
   }
 
-  private async runIndex(forceFull: boolean, docsPath?: string): Promise<IndexSummary> {
+  private async runIndexJob(indexOperation: () => Promise<IndexSummary>): Promise<IndexSummary> {
     if (!this.activeIndexPromise) {
-      this.activeIndexPromise = this.indexer
-        .index(forceFull, docsPath)
+      this.activeIndexPromise = indexOperation()
         .then(async (summary) => {
           const documents = await this.manifestStore.loadDocuments();
           this.hydrateState(summary.snapshot, documents);
@@ -94,7 +96,7 @@ export class CodeRag {
       return this.hydrateState(waitedState.snapshot, waitedState.documents);
     }
 
-    await this.runIndex(false);
+    await this.runIndexJob(() => this.indexer.index(false));
     return this.loadedState!;
   }
 
@@ -127,7 +129,7 @@ export class CodeRag {
    * and uses their content as the embedding text instead of generating thin markdown.
    */
   async index(options?: { docsPath?: string }): Promise<IndexSummary> {
-    return this.runIndex(true, options?.docsPath);
+    return this.runIndexJob(() => this.indexer.index(true, options?.docsPath));
   }
 
   /**
@@ -136,9 +138,12 @@ export class CodeRag {
    * and uses their content as the embedding text instead of generating thin markdown.
    */
   async reindex(options?: { full?: boolean; docsPath?: string }): Promise<IndexSummary> {
-    // reindex always does a full rebuild with model wipe
-    await this.config.vectorStore?.clear();
-    return this.runIndex(true, options?.docsPath);
+    return this.runIndexJob(() =>
+      this.indexer.reindex({
+        full: options?.full ?? false,
+        docsPath: options?.docsPath
+      })
+    );
   }
 
   /**
@@ -146,13 +151,10 @@ export class CodeRag {
    */
   async status(): Promise<Record<string, unknown>> {
     const state = await this.indexer.loadState();
-    const vectorMetadata = await this.config.vectorStore?.getMetadata<{
-      schemaVersion?: number;
-      embeddingProvider?: string;
-      embeddingModel?: string;
-      generatedAt?: string;
-    }>();
     const { mismatch, expected, actual } = await this.indexer.checkEmbeddingModelMismatch();
+    const embeddingProvider = state.manifest?.embeddingProvider ?? this.config.embeddingProvider?.name ?? "unknown";
+    const embeddingModel = state.manifest?.embeddingModel ?? this.config.embeddingProvider?.model ?? "unknown";
+    const embeddingDimensions = state.manifest?.embeddingDimensions ?? this.config.embeddingProvider?.dimensions ?? 0;
 
     return {
       indexed: Boolean(state.snapshot),
@@ -162,9 +164,10 @@ export class CodeRag {
       storageRoot: this.config.storageRoot,
       provider: state.snapshot?.provider ?? this.config.graphProvider?.name ?? null,
       llmEnabled: this.config.llm.enabled,
-      embeddingProvider: this.config.embeddingProvider?.name ?? "unknown",
-      embeddingModel: vectorMetadata?.embeddingModel ?? "unknown",
-      indexSchemaVersion: vectorMetadata?.schemaVersion ?? 0,
+      embeddingProvider,
+      embeddingModel,
+      embeddingDimensions,
+      indexSchemaVersion: state.manifest?.schemaVersion ?? 0,
       modelMismatch: mismatch,
       expectedEmbedding: expected,
       actualEmbedding: actual
@@ -232,6 +235,21 @@ export class CodeRag {
       throw new NotFoundError("No embedding provider is configured.");
     }
 
+    const depth = Math.min(options.depth ?? this.config.traversal.defaultDepth, this.config.traversal.maxDepth);
+    const answerMode: QueryResult["answerMode"] =
+      options.includeAnswer === false || !this.config.llm.enabled || !this.config.llmTransport ? "context-only" : "llm";
+
+    // Decide whether to use multi-hop retrieval
+    const useMultiHop =
+      options.multiHop === true &&
+      this.config.multiHop.enabled &&
+      answerMode === "llm";
+
+    if (useMultiHop) {
+      return this.queryMultiHop(question, answerMode, options, snapshot, documents, embeddingProvider, depth);
+    }
+
+    // Single-retrieval path
     const searchResults = rerankResults(
       question,
       await searchDocuments(
@@ -247,12 +265,9 @@ export class CodeRag {
     const primaryNode = primaryDocument
       ? snapshot.graph.nodes.find((node) => node.id === primaryDocument.nodeId)
       : undefined;
-    const depth = Math.min(options.depth ?? this.config.traversal.defaultDepth, this.config.traversal.maxDepth);
     const { dependencies, dependents } = primaryNode
       ? traverseDependencies(snapshot, primaryNode.id, depth)
       : { dependencies: [], dependents: [] };
-    const answerMode: QueryResult["answerMode"] =
-      options.includeAnswer === false || !this.config.llm.enabled || !this.config.llmTransport ? "context-only" : "llm";
     const context = await buildContextPackage(
       question,
       this.config.repoPath,
@@ -270,6 +285,7 @@ export class CodeRag {
       return {
         question,
         answerMode,
+        retrievalMode: "single",
         answer: fallbackAnswerFromContext(context),
         context
       };
@@ -289,6 +305,75 @@ export class CodeRag {
     return {
       question,
       answerMode,
+      retrievalMode: "single",
+      answer: llmResponse.answer,
+      context
+    };
+  }
+
+  /**
+   * Multi-hop retrieval: decompose question, parallel retrieve, synthesize.
+   */
+  private async queryMultiHop(
+    question: string,
+    answerMode: QueryResult["answerMode"],
+    options: QueryOptions,
+    snapshot: NonNullable<typeof this.loadedState>["snapshot"],
+    documents: NonNullable<typeof this.loadedState>["documents"],
+    embeddingProvider: NonNullable<typeof this.config.embeddingProvider>,
+    depth: number
+  ): Promise<QueryResult> {
+    // Stage 1: Decompose
+    const subQuestions = await decomposeQuestionWithFallback(
+      question,
+      this.config.llmTransport ?? undefined,
+      this.config.multiHop,
+      this.config.llm.model
+    );
+
+    if (!subQuestions || subQuestions.length < 2) {
+      // Fall back to single retrieval if decomposition fails
+      return this.query(question, { ...options, multiHop: false });
+    }
+
+    // Stage 2: Parallel retrieve
+    const retrievalResult = await multiHopRetrieve(
+      subQuestions,
+      documents,
+      embeddingProvider,
+      this.config.retrieval,
+      snapshot,
+      this.config.vectorStore,
+      this.config.multiHop.expansionDepth
+    );
+
+    // Stage 3: Context assembly + synthesis
+    const context = await buildMultiHopContextPackage(
+      question,
+      subQuestions,
+      retrievalResult,
+      this.config.repoPath,
+      snapshot,
+      documents,
+      this.config.retrieval,
+      this.fileCache
+    );
+
+    const llmResponse = await this.config.llmTransport!.generate(
+      {
+        question,
+        model: this.config.llm.model,
+        stream: Boolean(options.onToken),
+        context,
+        messages: buildMultiHopMessages(question, context)
+      },
+      options.onToken
+    );
+
+    return {
+      question,
+      answerMode,
+      retrievalMode: "multi-hop",
       answer: llmResponse.answer,
       context
     };

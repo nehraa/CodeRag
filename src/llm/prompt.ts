@@ -117,3 +117,78 @@ export const buildMessages = (question: string, context: ContextPackage): LlmReq
     content: `Question:\n${question}\n\n${summarizeContext(context)}`
   }
 ];
+
+const MULTI_HOP_SYSTEM_PROMPT = [
+  "You are answering questions about a codebase using multi-hop retrieved context.",
+  "The context was gathered by breaking the question into sub-questions and retrieving code for each.",
+  "Only use the provided repository context.",
+  "If the context is insufficient, say so plainly and identify which sub-questions lack coverage.",
+  "Do not invent functions, files, or behavior that is not present in the retrieved context."
+].join(" ");
+
+const formatSubQuestionSection = (
+  index: number,
+  question: string,
+  nodes: RetrievedNodeContext[]
+): string => {
+  if (nodes.length === 0) {
+    return `Sub-question ${index + 1}: "${question}"\nNo matching code found.`;
+  }
+
+  const nodeEntries = nodes
+    .map((node, ni) => `${ni + 1}. ${formatNodeHeader(node)}`)
+    .join("\n");
+
+  return `Sub-question ${index + 1}: "${question}"\nRetrieved ${nodes.length} node(s):\n${nodeEntries}`;
+};
+
+/**
+ * Builds LLM messages for multi-hop synthesis.
+ * Instructs the model to address each sub-question then unify the answer.
+ */
+export const buildMultiHopMessages = (
+  question: string,
+  context: ContextPackage
+): LlmRequest["messages"] => {
+  const subQuestions = context.subQuestions ?? [];
+  const nodeByIndex = new Map<number, RetrievedNodeContext[]>();
+
+  for (const node of context.relatedNodes) {
+    const idx = node.subQuestionIndex ?? 0;
+    const list = nodeByIndex.get(idx) ?? [];
+    list.push(node);
+    nodeByIndex.set(idx, list);
+  }
+
+  const subQuestionSections = subQuestions
+    .map((sq, i) => {
+      const nodes = nodeByIndex.get(i) ?? [];
+      return formatSubQuestionSection(i, sq, nodes);
+    })
+    .join("\n\n");
+
+  const userContent = [
+    `Question:\n${question}`,
+    ``,
+    `This question was decomposed into ${subQuestions.length} sub-questions.`,
+    `Context was retrieved independently for each, then deduplicated and merged.`,
+    ``,
+    subQuestionSections,
+    ``,
+    `Graph summary:`,
+    context.graphSummary,
+    ``,
+    formatWarnings(context.warnings),
+    ``,
+    `Answer the question comprehensively. Address each sub-question specifically,`,
+    `then synthesize into a unified answer. If some sub-questions couldn't be`,
+    `answered from the context, explicitly state what's missing.`
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return [
+    { role: "system", content: MULTI_HOP_SYSTEM_PROMPT },
+    { role: "user", content: userContent }
+  ];
+};
