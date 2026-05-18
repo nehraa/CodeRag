@@ -4,16 +4,16 @@ import type {
   ContextPackage,
   GraphSnapshot,
   IndexedNodeDocument,
-  MultiHopRetrievalResult,
+  RetrievedNodeContext,
   RetrievalConfig
 } from "../types.js";
-import type { RetrievedNodeContext } from "../types.js";
+import type { SectionLimits } from "./prompt.js";
 import { FileCache } from "../store/file-cache.js";
 import { createRetrievedNodeContext } from "../retrieval/page-index.js";
 
 const buildMultiHopGraphSummary = (
   subQuestions: string[],
-  retrievalResult: MultiHopRetrievalResult,
+  retrievalResult: { deduplicatedNodes: BlueprintNode[]; retrievalMetadata: Array<{ subQuestion: string; primaryNode?: BlueprintNode; relatedNodes: BlueprintNode[]; filesReferenced: string[] }> },
   snapshot: GraphSnapshot
 ): string => {
   const filesSpanned = new Set<string>();
@@ -72,25 +72,36 @@ const buildRelatedNodeContexts = async (
   return contexts;
 };
 
+const deriveSectionLimits = (retrieval: RetrievalConfig): SectionLimits => {
+  const mcc = retrieval.maxContextChars;
+  return {
+    primaryDoc: retrieval.primaryDocLimit ?? Math.round((mcc / 16000) * 1200),
+    primaryFile: retrieval.primaryFileLimit ?? Math.round((mcc / 16000) * 4000),
+    relatedDoc: retrieval.relatedDocLimit ?? Math.round((mcc / 16000) * 320),
+    relatedFile: retrieval.relatedFileLimit ?? Math.round((mcc / 16000) * 1200)
+  };
+};
+
 /**
  * Builds a ContextPackage from multi-hop retrieval results.
  * Unlike the single-node path, there is no single primary node.
  * The first retrieved node is promoted to "primary" for display purposes,
  * and all remaining nodes are listed as related.
+ *
+ * Returns both the context and the derived section limits for prompt building.
  */
 export const buildMultiHopContextPackage = async (
   question: string,
   subQuestions: string[],
-  retrievalResult: MultiHopRetrievalResult,
+  retrievalResult: { deduplicatedNodes: BlueprintNode[]; primaryNodes: Array<BlueprintNode | undefined>; expandedNodes: BlueprintNode[]; retrievalMetadata: Array<{ subQuestion: string; primaryNode?: BlueprintNode; relatedNodes: BlueprintNode[]; filesReferenced: string[] }> },
   repoPath: string,
   snapshot: GraphSnapshot,
   documents: Record<string, IndexedNodeDocument>,
   retrieval: RetrievalConfig,
   fileCache: FileCache
-): Promise<ContextPackage> => {
+): Promise<{ context: ContextPackage; limits: SectionLimits }> => {
   const allNodes = retrievalResult.deduplicatedNodes;
 
-  // Build RetrievedNodeContext for all deduplicated nodes
   const allContexts = await buildRelatedNodeContexts(
     allNodes,
     repoPath,
@@ -99,14 +110,12 @@ export const buildMultiHopContextPackage = async (
     documents
   );
 
-  // Promote the first node to "primary" for display
   const firstCtx = allContexts[0];
   const primaryContext: RetrievedNodeContext | null = firstCtx
     ? Object.assign({}, firstCtx, { relationship: "primary" as const, subQuestionIndex: undefined })
     : null;
   const relatedContexts: RetrievedNodeContext[] = allContexts.length > 1 ? allContexts.slice(1) : [];
 
-  // Apply context budgeting
   const warnings: string[] = [];
   let remainingBudget = retrieval.maxContextChars;
 
@@ -125,7 +134,14 @@ export const buildMultiHopContextPackage = async (
   const fittedRelated: RetrievedNodeContext[] = [];
   for (const ctx of relatedContexts) {
     if (remainingBudget <= 0) {
-      fittedRelated.push({ ...ctx, fullFileContent: "" });
+      const snippetLength = Math.min(200, ctx.fullFileContent.length);
+      const snippet = ctx.fullFileContent.slice(0, snippetLength);
+      warnings.push(
+        snippetLength > 0
+          ? `File content exhausted for ${ctx.filePath}; kept first ${snippetLength} chars as snippet.`
+          : `Dropped file content for ${ctx.filePath} because the context budget was exhausted.`
+      );
+      fittedRelated.push({ ...ctx, fullFileContent: snippet });
       continue;
     }
 
@@ -149,15 +165,20 @@ export const buildMultiHopContextPackage = async (
     filesReferenced: meta.filesReferenced
   }));
 
+  const limits = deriveSectionLimits(retrieval);
+
   return {
-    question,
-    answerMode: "llm" as const,
-    retrievalMode: "multi-hop" as const,
-    primaryNode: fittedPrimary,
-    relatedNodes: fittedRelated,
-    graphSummary: buildMultiHopGraphSummary(subQuestions, retrievalResult, snapshot),
-    warnings,
-    subQuestions,
-    subQuestionResults
+    context: {
+      question,
+      answerMode: "llm" as const,
+      retrievalMode: "multi-hop" as const,
+      primaryNode: fittedPrimary,
+      relatedNodes: fittedRelated,
+      graphSummary: buildMultiHopGraphSummary(subQuestions, retrievalResult, snapshot),
+      warnings,
+      subQuestions,
+      subQuestionResults
+    },
+    limits
   };
 };

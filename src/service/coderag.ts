@@ -268,7 +268,7 @@ export class CodeRag {
     const { dependencies, dependents } = primaryNode
       ? traverseDependencies(snapshot, primaryNode.id, depth)
       : { dependencies: [], dependents: [] };
-    const context = await buildContextPackage(
+    const { context, limits } = await buildContextPackage(
       question,
       this.config.repoPath,
       snapshot,
@@ -297,7 +297,7 @@ export class CodeRag {
         model: this.config.llm.model,
         stream: Boolean(options.onToken),
         context,
-        messages: buildMessages(question, context)
+        messages: buildMessages(question, context, limits)
       },
       options.onToken
     );
@@ -348,7 +348,7 @@ export class CodeRag {
     );
 
     // Stage 3: Context assembly + synthesis
-    const context = await buildMultiHopContextPackage(
+    const { context, limits } = await buildMultiHopContextPackage(
       question,
       subQuestions,
       retrievalResult,
@@ -365,7 +365,7 @@ export class CodeRag {
         model: this.config.llm.model,
         stream: Boolean(options.onToken),
         context,
-        messages: buildMultiHopMessages(question, context)
+        messages: buildMultiHopMessages(question, context, limits)
       },
       options.onToken
     );

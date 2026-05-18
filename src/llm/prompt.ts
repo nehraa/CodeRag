@@ -1,11 +1,11 @@
 import type { ContextPackage, RetrievedNodeContext, LlmRequest } from "../types.js";
 
-const PRIMARY_DOC_CHAR_LIMIT = 1_200;
-const PRIMARY_FILE_CHAR_LIMIT = 4_000;
-const RELATED_DOC_CHAR_LIMIT = 320;
-const RELATED_FILE_CHAR_LIMIT = 1_200;
-const WARNING_CHAR_LIMIT = 160;
-const MAX_WARNING_COUNT = 4;
+export interface SectionLimits {
+  primaryDoc: number;
+  primaryFile: number;
+  relatedDoc: number;
+  relatedFile: number;
+}
 
 const truncateText = (value: string, maxChars: number): string => {
   if (value.length <= maxChars) {
@@ -35,11 +35,11 @@ const formatFileSection = (value: string, maxChars: number): string =>
 
 const joinSections = (sections: string[]): string => sections.filter(Boolean).join("\n\n");
 
-const formatPrimaryNode = (node: RetrievedNodeContext): string =>
+const formatPrimaryNode = (node: RetrievedNodeContext, limits: SectionLimits): string =>
   joinSections([
     `Primary node:\n${formatNodeHeader(node)}`,
-    formatDocSection("Primary doc", node.doc, PRIMARY_DOC_CHAR_LIMIT),
-    formatFileSection(node.fullFileContent, PRIMARY_FILE_CHAR_LIMIT)
+    formatDocSection("Primary doc", node.doc, limits.primaryDoc),
+    formatFileSection(node.fullFileContent, limits.primaryFile)
   ]);
 
 const shouldIncludeRelatedFile = (
@@ -51,7 +51,8 @@ const shouldIncludeRelatedFile = (
 const formatRelatedNode = (
   node: RetrievedNodeContext,
   primaryNode: RetrievedNodeContext | null,
-  includedFiles: Set<string>
+  includedFiles: Set<string>,
+  limits: SectionLimits
 ): string => {
   const includeFile = shouldIncludeRelatedFile(node, primaryNode, includedFiles);
   if (includeFile) {
@@ -60,14 +61,15 @@ const formatRelatedNode = (
 
   return joinSections([
     formatNodeHeader(node),
-    formatDocSection("Related doc", node.doc, RELATED_DOC_CHAR_LIMIT),
-    includeFile ? formatFileSection(node.fullFileContent, RELATED_FILE_CHAR_LIMIT) : ""
+    formatDocSection("Related doc", node.doc, limits.relatedDoc),
+    includeFile ? formatFileSection(node.fullFileContent, limits.relatedFile) : ""
   ]);
 };
 
 const formatRelatedNodes = (
   relatedNodes: RetrievedNodeContext[],
-  primaryNode: RetrievedNodeContext | null
+  primaryNode: RetrievedNodeContext | null,
+  limits: SectionLimits
 ): string => {
   if (relatedNodes.length === 0) {
     return "Related nodes:\nnone";
@@ -75,7 +77,7 @@ const formatRelatedNodes = (
 
   const includedFiles = new Set(primaryNode ? [primaryNode.filePath] : []);
   const entries = relatedNodes.map((node, index) =>
-    `${index + 1}. ${formatRelatedNode(node, primaryNode, includedFiles)}`
+    `${index + 1}. ${formatRelatedNode(node, primaryNode, includedFiles, limits)}`
   );
   return `Related nodes:\n${entries.join("\n\n")}`;
 };
@@ -85,17 +87,19 @@ const formatWarnings = (warnings: string[]): string => {
     return "";
   }
 
+  const MAX_WARNING_COUNT = 4;
+  const WARNING_CHAR_LIMIT = 160;
   const entries = warnings
     .slice(0, MAX_WARNING_COUNT)
     .map((warning, index) => `${index + 1}. ${truncateText(warning, WARNING_CHAR_LIMIT)}`);
   return `Warnings:\n${entries.join("\n")}`;
 };
 
-const summarizeContext = (context: ContextPackage): string =>
+const summarizeContext = (context: ContextPackage, limits: SectionLimits): string =>
   joinSections([
     `Graph summary:\n${context.graphSummary}`,
-    context.primaryNode ? formatPrimaryNode(context.primaryNode) : "Primary node:\nnone",
-    formatRelatedNodes(context.relatedNodes, context.primaryNode),
+    context.primaryNode ? formatPrimaryNode(context.primaryNode, limits) : "Primary node:\nnone",
+    formatRelatedNodes(context.relatedNodes, context.primaryNode, limits),
     formatWarnings(context.warnings)
   ]);
 
@@ -107,14 +111,18 @@ export const buildSystemPrompt = (): string =>
     "Do not invent functions, files, or behavior that is not present in the retrieved context."
   ].join(" ");
 
-export const buildMessages = (question: string, context: ContextPackage): LlmRequest["messages"] => [
+export const buildMessages = (
+  question: string,
+  context: ContextPackage,
+  limits: SectionLimits
+): LlmRequest["messages"] => [
   {
     role: "system",
     content: buildSystemPrompt()
   },
   {
     role: "user",
-    content: `Question:\n${question}\n\n${summarizeContext(context)}`
+    content: `Question:\n${question}\n\n${summarizeContext(context, limits)}`
   }
 ];
 
@@ -129,7 +137,8 @@ const MULTI_HOP_SYSTEM_PROMPT = [
 const formatSubQuestionSection = (
   index: number,
   question: string,
-  nodes: RetrievedNodeContext[]
+  nodes: RetrievedNodeContext[],
+  limits: SectionLimits
 ): string => {
   if (nodes.length === 0) {
     return `Sub-question ${index + 1}: "${question}"\nNo matching code found.`;
@@ -148,7 +157,8 @@ const formatSubQuestionSection = (
  */
 export const buildMultiHopMessages = (
   question: string,
-  context: ContextPackage
+  context: ContextPackage,
+  limits: SectionLimits
 ): LlmRequest["messages"] => {
   const subQuestions = context.subQuestions ?? [];
   const nodeByIndex = new Map<number, RetrievedNodeContext[]>();
@@ -163,7 +173,7 @@ export const buildMultiHopMessages = (
   const subQuestionSections = subQuestions
     .map((sq, i) => {
       const nodes = nodeByIndex.get(i) ?? [];
-      return formatSubQuestionSection(i, sq, nodes);
+      return formatSubQuestionSection(i, sq, nodes, limits);
     })
     .join("\n\n");
 

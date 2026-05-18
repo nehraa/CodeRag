@@ -21,7 +21,12 @@ export type MultiHopConfig = z.infer<typeof multiHopConfigSchema>;
 export const retrievalConfigSchema = z.object({
   topK: z.number().int().positive().default(6),
   rerankK: z.number().int().positive().default(3),
-  maxContextChars: z.number().int().positive().default(16000)
+  maxContextChars: z.number().int().positive().default(16000),
+  /** Per-section char limits. All optional — defaults scale with maxContextChars. */
+  primaryDocLimit: z.number().int().positive().optional(),
+  primaryFileLimit: z.number().int().positive().optional(),
+  relatedDocLimit: z.number().int().positive().optional(),
+  relatedFileLimit: z.number().int().positive().optional()
 });
 export type RetrievalConfig = z.infer<typeof retrievalConfigSchema>;
 

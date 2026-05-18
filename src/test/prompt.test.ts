@@ -48,8 +48,15 @@ const context = {
 };
 
 describe("prompt builder", () => {
+  const testLimits = {
+    primaryDoc: 1200,
+    primaryFile: 4000,
+    relatedDoc: 320,
+    relatedFile: 1200
+  };
+
   it("builds the system prompt and a compact user context", () => {
-    const userMessage = buildMessages("where is auth handled?", context)[1]?.content ?? "";
+    const userMessage = buildMessages("where is auth handled?", context, testLimits)[1]?.content ?? "";
 
     expect(buildSystemPrompt()).toContain("Only use the provided repository context.");
     expect(userMessage).toContain("Graph summary:");
@@ -70,7 +77,7 @@ describe("prompt builder", () => {
         primaryNode: null,
         relatedNodes: [],
         warnings: []
-      })[1]?.content ?? "";
+      }, testLimits)[1]?.content ?? "";
 
     expect(userMessage).toContain("Primary node:\nnone");
     expect(userMessage).toContain("Related nodes:\nnone");
@@ -97,7 +104,7 @@ describe("prompt builder", () => {
           }
         ],
         warnings: new Array(6).fill("warning message that should appear only in the capped warning list")
-      })[1]?.content ?? "";
+      }, testLimits)[1]?.content ?? "";
 
     expect(userMessage).toContain("1. name=blankNode | relationship=calls | kind=function | file=src/blank.ts:1-1 | callSites=none");
     expect(userMessage).not.toContain("Related doc:");

@@ -89,7 +89,7 @@ describe("context builder", () => {
       related: createDocument("related", "related", "src/related.ts", "related doc")
     };
 
-    const context = await buildContextPackage(
+    const { context } = await buildContextPackage(
       "what calls related",
       repoPath,
       snapshot,
@@ -148,7 +148,7 @@ describe("context builder", () => {
       related: createDocument("related", "related", "src/related.ts", "related doc")
     };
 
-    const context = await buildContextPackage(
+    const { context } = await buildContextPackage(
       "missing",
       repoPath,
       snapshot,
@@ -163,8 +163,10 @@ describe("context builder", () => {
 
     expect(context.primaryNode).toBeNull();
     expect(context.graphSummary).toContain("No matching node");
-    expect(context.relatedNodes[0]?.fullFileContent).toBe("");
-    expect(context.warnings).toContain("Dropped file content for src/related.ts because the context budget was exhausted.");
+    expect(context.relatedNodes[0]?.fullFileContent).toBe("RELATED");
+    expect(context.warnings).toContain(
+      "File content exhausted for src/related.ts; kept first 7 chars as snippet."
+    );
 
     await cleanupPaths([repoPath]);
   });
@@ -208,7 +210,7 @@ describe("context builder", () => {
       primary: createDocument("primary", "primary", "src/primary.ts", "primary doc")
     };
 
-    const context = await buildContextPackage(
+    const { context } = await buildContextPackage(
       "primary",
       repoPath,
       snapshot,
