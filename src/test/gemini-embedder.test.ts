@@ -225,4 +225,9 @@ describe("GeminiEmbeddingProvider", () => {
     await expectation;
     vi.useRealTimers();
   });
+
+  it("has maxInputTokens set to 8192 for gemini-embedding-2 model", () => {
+    const provider = new GeminiEmbeddingProvider({ apiKey: "config-key" });
+    expect(provider.maxInputTokens).toBe(8192);
+  });
 });
