@@ -68,7 +68,7 @@ export const runSetupWizard = async (cwd: string, logger?: Logger): Promise<void
   };
   const embeddingProviderKind = providerMap[embeddingProvider] ?? "local-hash";
 
-  let geminiModel = "models/gemini-embedding-001";
+  let geminiModel = "models/gemini-embedding-2";
   let geminiApiKey = "";
   let onnxModelDir = ".coderag-models/models";
 

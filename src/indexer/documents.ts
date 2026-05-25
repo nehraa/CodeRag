@@ -20,7 +20,8 @@ const readExternalNodeDoc = async (nodeId: string, docsPath: string): Promise<st
 };
 
 const EMPTY_LIST = "- None";
-const MAX_EMBEDDING_CHARS = 2048; // Embedding models cap at ~512 tokens; extra chars waste memory
+/** ~4 chars per token is a safe estimate for mixed code/text content */
+const CHARS_PER_TOKEN = 4;
 
 const formatList = (items: string[]): string => (items.length > 0 ? items.map((item) => `- ${item}`).join("\n") : EMPTY_LIST);
 
@@ -259,9 +260,10 @@ export const buildIndexedDocuments = async (
         embeddingText = [doc, sourceText].filter(Boolean).join("\n\n");
       }
 
-      // Truncate to save memory — embedding models cap at ~512 tokens anyway
-      if (embeddingText.length > MAX_EMBEDDING_CHARS) {
-        embeddingText = embeddingText.slice(0, MAX_EMBEDDING_CHARS);
+      // Truncate to fit the model's token limit
+      const maxChars = embeddingProvider.maxInputTokens * CHARS_PER_TOKEN;
+      if (embeddingText.length > maxChars) {
+        embeddingText = embeddingText.slice(0, maxChars);
       }
 
       preparedForChunk.push({

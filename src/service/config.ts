@@ -210,7 +210,7 @@ export const resolveRuntimeConfig = (config: SerializableCodeRagConfig, cwd: str
   const embeddingConfig = config.embedding ?? {
     provider: "local-hash" as const,
     dimensions: 256,
-    geminiModel: "models/gemini-embedding-001",
+    geminiModel: "models/gemini-embedding-2",
     timeoutMs: 30000
   };
 

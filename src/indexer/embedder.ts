@@ -5,6 +5,8 @@ export class LocalHashEmbeddingProvider implements EmbeddingProvider {
   readonly name = "local-hash";
   readonly model = "local-hash";
   readonly dimensions: number;
+  /** Unlimited — hash-based embedding has no token limit. */
+  readonly maxInputTokens = Infinity;
 
   constructor(dimensions = 256) {
     this.dimensions = dimensions;

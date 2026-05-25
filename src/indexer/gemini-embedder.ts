@@ -2,7 +2,7 @@ import type { EmbeddingProvider } from "../types.js";
 import { ConfigurationError } from "../errors/index.js";
 
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
-const DEFAULT_MODEL = "models/gemini-embedding-001";
+const DEFAULT_MODEL = "models/gemini-embedding-2";
 const DEFAULT_DIMENSIONS = 768;
 const MAX_BATCH_SIZE = 100;
 const GEMINI_API_KEY_ENV = "CODERAG_GEMINI_API_KEY";
@@ -23,6 +23,7 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
   readonly name = "gemini";
   readonly dimensions = DEFAULT_DIMENSIONS;
   readonly maxBatchSize = MAX_BATCH_SIZE;
+  readonly maxInputTokens = 8192;
   readonly model: string;
   private readonly apiKey: string;
   private readonly timeoutMs: number;

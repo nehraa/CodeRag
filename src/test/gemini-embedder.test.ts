@@ -73,7 +73,7 @@ describe("GeminiEmbeddingProvider", () => {
 
     await expect(provider.embed("hello from alias env")).resolves.toEqual([9, 8, 7]);
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=alias-key",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent?key=alias-key",
       expect.any(Object)
     );
   });
@@ -85,9 +85,9 @@ describe("GeminiEmbeddingProvider", () => {
     const provider = new GeminiEmbeddingProvider({ apiKey: "config-key" });
 
     await expect(provider.embed("default model")).resolves.toEqual([7]);
-    expect(provider.model).toBe("models/gemini-embedding-001");
+    expect(provider.model).toBe("models/gemini-embedding-2");
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=config-key",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent?key=config-key",
       expect.any(Object)
     );
   });
