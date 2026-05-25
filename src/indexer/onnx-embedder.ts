@@ -98,6 +98,7 @@ export class OnnxEmbeddingProvider implements EmbeddingProvider {
   readonly model = DEFAULT_MODEL;
   readonly dimensions = DEFAULT_DIMENSIONS;
   readonly maxBatchSize = 1; // One at a time to minimize memory pressure
+  readonly maxInputTokens = 256; // all-MiniLM-L6-v2 max sequence length
   private readonly modelDir: string;
   private readonly logger?: Logger;
 

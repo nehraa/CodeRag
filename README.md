@@ -101,7 +101,7 @@ Supported environment overrides:
 - `CODERAG_CUSTOM_HTTP_FORMAT`
 - `CODERAG_LLM_HEADERS`
 
-When `embedding.provider` is `gemini`, CodeRag defaults to `models/gemini-embedding-001` and requests 768-dimensional vectors explicitly so the stored embedding fingerprint matches the vectors written to LanceDB. It accepts either `CODERAG_GEMINI_API_KEY` or the compatibility alias `CODERAG_GEMINI_AI_KEY`.
+When `embedding.provider` is `gemini`, CodeRag defaults to `models/gemini-embedding-2` and requests 768-dimensional vectors explicitly so the stored embedding fingerprint matches the vectors written to LanceDB. It accepts either `CODERAG_GEMINI_API_KEY` or the compatibility alias `CODERAG_GEMINI_AI_KEY`.
 
 When `embedding.provider` is `onnx`, CodeRag uses `Xenova/gte-small` (384-dim, ~33MB) running locally via `@xenova/transformers`. No API key or external server needed. The model must be downloaded to `<onnxModelDir>/Xenova/gte-small/` (default `.coderag-models/models/Xenova/gte-small/`).
 

@@ -5,9 +5,11 @@ import type {
   GraphSnapshot,
   IndexedNodeDocument,
   MultiHopRetrievalResult,
+  RetrievedNodeContext,
   RetrievalConfig
 } from "../types.js";
-import type { RetrievedNodeContext } from "../types.js";
+import type { SectionLimits } from "./prompt.js";
+import { deriveSectionLimits } from "./context-builder.js";
 import { FileCache } from "../store/file-cache.js";
 import { createRetrievedNodeContext } from "../retrieval/page-index.js";
 
@@ -77,6 +79,8 @@ const buildRelatedNodeContexts = async (
  * Unlike the single-node path, there is no single primary node.
  * The first retrieved node is promoted to "primary" for display purposes,
  * and all remaining nodes are listed as related.
+ *
+ * Returns both the context and the derived section limits for prompt building.
  */
 export const buildMultiHopContextPackage = async (
   question: string,
@@ -87,10 +91,9 @@ export const buildMultiHopContextPackage = async (
   documents: Record<string, IndexedNodeDocument>,
   retrieval: RetrievalConfig,
   fileCache: FileCache
-): Promise<ContextPackage> => {
+): Promise<{ context: ContextPackage; limits: SectionLimits }> => {
   const allNodes = retrievalResult.deduplicatedNodes;
 
-  // Build RetrievedNodeContext for all deduplicated nodes
   const allContexts = await buildRelatedNodeContexts(
     allNodes,
     repoPath,
@@ -99,14 +102,12 @@ export const buildMultiHopContextPackage = async (
     documents
   );
 
-  // Promote the first node to "primary" for display
   const firstCtx = allContexts[0];
   const primaryContext: RetrievedNodeContext | null = firstCtx
     ? Object.assign({}, firstCtx, { relationship: "primary" as const, subQuestionIndex: undefined })
     : null;
   const relatedContexts: RetrievedNodeContext[] = allContexts.length > 1 ? allContexts.slice(1) : [];
 
-  // Apply context budgeting
   const warnings: string[] = [];
   let remainingBudget = retrieval.maxContextChars;
 
@@ -125,6 +126,7 @@ export const buildMultiHopContextPackage = async (
   const fittedRelated: RetrievedNodeContext[] = [];
   for (const ctx of relatedContexts) {
     if (remainingBudget <= 0) {
+      warnings.push(`Dropped file content for ${ctx.filePath} because the context budget was exhausted.`);
       fittedRelated.push({ ...ctx, fullFileContent: "" });
       continue;
     }
@@ -149,15 +151,20 @@ export const buildMultiHopContextPackage = async (
     filesReferenced: meta.filesReferenced
   }));
 
+  const limits = deriveSectionLimits(retrieval);
+
   return {
-    question,
-    answerMode: "llm" as const,
-    retrievalMode: "multi-hop" as const,
-    primaryNode: fittedPrimary,
-    relatedNodes: fittedRelated,
-    graphSummary: buildMultiHopGraphSummary(subQuestions, retrievalResult, snapshot),
-    warnings,
-    subQuestions,
-    subQuestionResults
+    context: {
+      question,
+      answerMode: "llm" as const,
+      retrievalMode: "multi-hop" as const,
+      primaryNode: fittedPrimary,
+      relatedNodes: fittedRelated,
+      graphSummary: buildMultiHopGraphSummary(subQuestions, retrievalResult, snapshot),
+      warnings,
+      subQuestions,
+      subQuestionResults
+    },
+    limits
   };
 };

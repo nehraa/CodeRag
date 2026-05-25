@@ -154,7 +154,11 @@ export const loadSerializableConfig = async (cwd: string, configPath?: string): 
       ...baseConfig.retrieval,
       topK: parseNumber(process.env.CODERAG_TOP_K) ?? baseConfig.retrieval.topK,
       rerankK: parseNumber(process.env.CODERAG_RERANK_K) ?? baseConfig.retrieval.rerankK,
-      maxContextChars: parseNumber(process.env.CODERAG_MAX_CONTEXT_CHARS) ?? baseConfig.retrieval.maxContextChars
+      maxContextChars: parseNumber(process.env.CODERAG_MAX_CONTEXT_CHARS) ?? baseConfig.retrieval.maxContextChars,
+      primaryDocLimit: parseNumber(process.env.CODERAG_PRIMARY_DOC_LIMIT) ?? baseConfig.retrieval.primaryDocLimit,
+      primaryFileLimit: parseNumber(process.env.CODERAG_PRIMARY_FILE_LIMIT) ?? baseConfig.retrieval.primaryFileLimit,
+      relatedDocLimit: parseNumber(process.env.CODERAG_RELATED_DOC_LIMIT) ?? baseConfig.retrieval.relatedDocLimit,
+      relatedFileLimit: parseNumber(process.env.CODERAG_RELATED_FILE_LIMIT) ?? baseConfig.retrieval.relatedFileLimit
     },
     multiHop: {
       ...baseConfig.multiHop,
@@ -206,7 +210,7 @@ export const resolveRuntimeConfig = (config: SerializableCodeRagConfig, cwd: str
   const embeddingConfig = config.embedding ?? {
     provider: "local-hash" as const,
     dimensions: 256,
-    geminiModel: "models/gemini-embedding-001",
+    geminiModel: "models/gemini-embedding-2",
     timeoutMs: 30000
   };
 

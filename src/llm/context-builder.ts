@@ -1,6 +1,13 @@
 import type { BlueprintNode } from "@abhinav2203/codeflow-core/schema";
 
-import type { ContextPackage, GraphSnapshot, IndexedNodeDocument, RetrievedNodeContext, RetrievalConfig } from "../types.js";
+import type {
+  ContextPackage,
+  GraphSnapshot,
+  IndexedNodeDocument,
+  RetrievedNodeContext,
+  RetrievalConfig
+} from "../types.js";
+import type { SectionLimits } from "./prompt.js";
 import { FileCache } from "../store/file-cache.js";
 import { createRetrievedNodeContext } from "../retrieval/page-index.js";
 
@@ -23,6 +30,36 @@ const buildGraphSummary = (
   }
 
   return parts.join(" ");
+};
+
+/**
+ * Derives per-section char limits from retrieval config.
+ *
+ * Defaults are proportional to maxContextChars so they scale automatically.
+ * Explicit overrides (when the user sets primaryDocLimit, etc.) always take precedence.
+ *
+ * Default distribution for a 16K baseline:
+ *   primaryDoc  ->  1,200 (7.5%)
+ *   primaryFile ->  4,000 (25%)
+ *   relatedDoc  ->    320 (2%)
+ *   relatedFile ->  1,200 (7.5%)
+ * Remaining ~58% is for structural overhead (headers, warnings, graph summary).
+ */
+export const deriveSectionLimits = (retrieval: RetrievalConfig): SectionLimits => {
+  const mcc = retrieval.maxContextChars;
+
+  // Proportional defaults relative to a 16,000 baseline.
+  const primaryDocDefault = Math.max(1, Math.round((mcc / 16000) * 1200));
+  const primaryFileDefault = Math.max(1, Math.round((mcc / 16000) * 4000));
+  const relatedDocDefault = Math.max(1, Math.round((mcc / 16000) * 320));
+  const relatedFileDefault = Math.max(1, Math.round((mcc / 16000) * 1200));
+
+  return {
+    primaryDoc: retrieval.primaryDocLimit ?? primaryDocDefault,
+    primaryFile: retrieval.primaryFileLimit ?? primaryFileDefault,
+    relatedDoc: retrieval.relatedDocLimit ?? relatedDocDefault,
+    relatedFile: retrieval.relatedFileLimit ?? relatedFileDefault
+  };
 };
 
 const truncateContext = (context: RetrievedNodeContext, maxChars: number, warnings: string[]): RetrievedNodeContext => {
@@ -115,6 +152,8 @@ const buildRelatedContextPromises = (
 
 /**
  * Builds the final context package passed to the LLM or returned directly to the caller.
+ *
+ * The caller receives `limits` so it can pass them through to `buildMessages()`.
  */
 export const buildContextPackage = async (
   question: string,
@@ -127,7 +166,7 @@ export const buildContextPackage = async (
   dependencies: BlueprintNode[],
   dependents: BlueprintNode[],
   answerMode: ContextPackage["answerMode"]
-): Promise<ContextPackage> => {
+): Promise<{ context: ContextPackage; limits: SectionLimits }> => {
   const primaryDocument = primaryNode ? documents[primaryNode.id] : undefined;
   const primaryContext = primaryDocument
     ? await createRetrievedNodeContext(repoPath, fileCache, snapshot, primaryDocument, "primary")
@@ -138,13 +177,18 @@ export const buildContextPackage = async (
   const primaryResult = fitPrimaryContext(primaryContext, retrieval.maxContextChars);
   const relatedResult = fitRelatedContexts(resolvedRelatedContexts, primaryResult.remainingBudget);
 
+  const limits = deriveSectionLimits(retrieval);
+
   return {
-    question,
-    answerMode,
-    retrievalMode: "single" as const,
-    primaryNode: primaryResult.primaryContext,
-    relatedNodes: relatedResult.relatedContexts,
-    graphSummary: buildGraphSummary(primaryNode, dependencies, dependents),
-    warnings: [...primaryResult.warnings, ...relatedResult.warnings]
+    context: {
+      question,
+      answerMode,
+      retrievalMode: "single" as const,
+      primaryNode: primaryResult.primaryContext,
+      relatedNodes: relatedResult.relatedContexts,
+      graphSummary: buildGraphSummary(primaryNode, dependencies, dependents),
+      warnings: [...primaryResult.warnings, ...relatedResult.warnings]
+    },
+    limits
   };
 };

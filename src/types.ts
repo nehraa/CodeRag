@@ -21,7 +21,12 @@ export type MultiHopConfig = z.infer<typeof multiHopConfigSchema>;
 export const retrievalConfigSchema = z.object({
   topK: z.number().int().positive().default(6),
   rerankK: z.number().int().positive().default(3),
-  maxContextChars: z.number().int().positive().default(16000)
+  maxContextChars: z.number().int().positive().default(16000),
+  /** Per-section char limits. All optional — defaults scale with maxContextChars. */
+  primaryDocLimit: z.number().int().positive().optional(),
+  primaryFileLimit: z.number().int().positive().optional(),
+  relatedDocLimit: z.number().int().positive().optional(),
+  relatedFileLimit: z.number().int().positive().optional()
 });
 export type RetrievalConfig = z.infer<typeof retrievalConfigSchema>;
 
@@ -61,7 +66,7 @@ export type LlmConfig = SerializableLlmConfig;
 export const embeddingConfigSchema = z.object({
   provider: embeddingProviderKindSchema.default("local-hash"),
   dimensions: z.number().int().positive().default(256),
-  geminiModel: z.string().min(1).default("models/gemini-embedding-001"),
+  geminiModel: z.string().min(1).default("models/gemini-embedding-2"),
   timeoutMs: z.number().int().positive().default(30000),
   onnxModelDir: z.string().min(1).default(".coderag-models/models")
 });
@@ -73,7 +78,7 @@ export const serializableConfigSchema = z.object({
   embedding: embeddingConfigSchema.default({
     provider: "local-hash",
     dimensions: 256,
-    geminiModel: "models/gemini-embedding-001",
+    geminiModel: "models/gemini-embedding-2",
     timeoutMs: 30000,
     onnxModelDir: ".coderag-models/models"
   }),
@@ -414,6 +419,8 @@ export interface EmbeddingProvider {
   readonly model: string;
   readonly dimensions: number;
   readonly maxBatchSize?: number;
+  /** Maximum input tokens the model accepts. Used to derive MAX_EMBEDDING_CHARS. */
+  readonly maxInputTokens: number;
   embed(text: string): Promise<number[]>;
   embedBatch?(texts: string[]): Promise<number[][]>;
 }

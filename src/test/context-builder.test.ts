@@ -89,7 +89,7 @@ describe("context builder", () => {
       related: createDocument("related", "related", "src/related.ts", "related doc")
     };
 
-    const context = await buildContextPackage(
+    const { context, limits } = await buildContextPackage(
       "what calls related",
       repoPath,
       snapshot,
@@ -105,6 +105,12 @@ describe("context builder", () => {
     expect(context.primaryNode?.fullFileContent).toBe("PRIMARY-CONTENT");
     expect(context.relatedNodes[0]?.callSiteLines).toEqual([3]);
     expect(context.warnings).toContain("Truncated src/related.ts to stay within the context budget.");
+    expect(limits).toEqual({
+      primaryDoc: 1,
+      primaryFile: 5,
+      relatedDoc: 1,
+      relatedFile: 1
+    });
 
     await cleanupPaths([repoPath]);
   });
@@ -148,7 +154,7 @@ describe("context builder", () => {
       related: createDocument("related", "related", "src/related.ts", "related doc")
     };
 
-    const context = await buildContextPackage(
+    const { context, limits } = await buildContextPackage(
       "missing",
       repoPath,
       snapshot,
@@ -165,6 +171,12 @@ describe("context builder", () => {
     expect(context.graphSummary).toContain("No matching node");
     expect(context.relatedNodes[0]?.fullFileContent).toBe("");
     expect(context.warnings).toContain("Dropped file content for src/related.ts because the context budget was exhausted.");
+    expect(limits).toEqual({
+      primaryDoc: 1,
+      primaryFile: 1,
+      relatedDoc: 1,
+      relatedFile: 1
+    });
 
     await cleanupPaths([repoPath]);
   });
@@ -208,7 +220,7 @@ describe("context builder", () => {
       primary: createDocument("primary", "primary", "src/primary.ts", "primary doc")
     };
 
-    const context = await buildContextPackage(
+    const { context, limits } = await buildContextPackage(
       "primary",
       repoPath,
       snapshot,
@@ -222,6 +234,12 @@ describe("context builder", () => {
     );
 
     expect(context.graphSummary).toBe("Primary node: primary.");
+    expect(limits).toEqual({
+      primaryDoc: 5,
+      primaryFile: 16,
+      relatedDoc: 1,
+      relatedFile: 5
+    });
     await cleanupPaths([repoPath]);
   });
 });

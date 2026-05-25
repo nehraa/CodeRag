@@ -48,8 +48,21 @@ const context = {
 };
 
 describe("prompt builder", () => {
+  const testLimits = {
+    primaryDoc: 1200,
+    primaryFile: 4000,
+    relatedDoc: 320,
+    relatedFile: 1200
+  };
+  const tinyLimits = {
+    primaryDoc: 20,
+    primaryFile: 24,
+    relatedDoc: 22,
+    relatedFile: 26
+  };
+
   it("builds the system prompt and a compact user context", () => {
-    const userMessage = buildMessages("where is auth handled?", context)[1]?.content ?? "";
+    const userMessage = buildMessages("where is auth handled?", context, testLimits)[1]?.content ?? "";
 
     expect(buildSystemPrompt()).toContain("Only use the provided repository context.");
     expect(userMessage).toContain("Graph summary:");
@@ -60,7 +73,19 @@ describe("prompt builder", () => {
     expect(userMessage).toContain("Warnings:");
     expect(userMessage).not.toContain("\"graphSummary\"");
     expect(userMessage).not.toContain("DUPLICATE FILE CONTENT");
+    expect(userMessage).not.toContain("...[truncated]");
     expect(userMessage.length).toBeLessThan(1_500);
+  });
+
+  it("applies caller-provided limits when truncating docs and file excerpts", () => {
+    const userMessage = buildMessages("where is auth handled?", context, tinyLimits)[1]?.content ?? "";
+
+    expect(userMessage).toContain("Primary doc:\nrequi\n...[truncated]");
+    expect(userMessage).toContain("File excerpt:\nexport fu\n...[truncated]");
+    expect(userMessage).toContain("Related doc:\nverifyT\n...[truncated]");
+    expect(userMessage).toContain("Related doc:\ngetSess\n...[truncated]");
+    expect(userMessage).toContain("File excerpt:\nexport func\n...[truncated]");
+    expect(userMessage).not.toContain("DUPLICATE FILE CONTENT");
   });
 
   it("renders a missing primary node without related entries", () => {
@@ -70,11 +95,12 @@ describe("prompt builder", () => {
         primaryNode: null,
         relatedNodes: [],
         warnings: []
-      })[1]?.content ?? "";
+      }, testLimits)[1]?.content ?? "";
 
     expect(userMessage).toContain("Primary node:\nnone");
     expect(userMessage).toContain("Related nodes:\nnone");
     expect(userMessage).not.toContain("Warnings:");
+    expect(userMessage).not.toContain("...[truncated]");
   });
 
   it("omits blank related docs and file excerpts when there is no primary node", () => {
@@ -97,11 +123,12 @@ describe("prompt builder", () => {
           }
         ],
         warnings: new Array(6).fill("warning message that should appear only in the capped warning list")
-      })[1]?.content ?? "";
+      }, testLimits)[1]?.content ?? "";
 
     expect(userMessage).toContain("1. name=blankNode | relationship=calls | kind=function | file=src/blank.ts:1-1 | callSites=none");
     expect(userMessage).not.toContain("Related doc:");
     expect(userMessage).not.toContain("File excerpt:");
     expect(userMessage.match(/warning message/g)?.length).toBe(4);
+    expect(userMessage).not.toContain("...[truncated]");
   });
 });
