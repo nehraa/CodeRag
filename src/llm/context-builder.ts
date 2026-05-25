@@ -49,10 +49,10 @@ export const deriveSectionLimits = (retrieval: RetrievalConfig): SectionLimits =
   const mcc = retrieval.maxContextChars;
 
   // Proportional defaults relative to a 16,000 baseline.
-  const primaryDocDefault = Math.round((mcc / 16000) * 1200);
-  const primaryFileDefault = Math.round((mcc / 16000) * 4000);
-  const relatedDocDefault = Math.round((mcc / 16000) * 320);
-  const relatedFileDefault = Math.round((mcc / 16000) * 1200);
+  const primaryDocDefault = Math.max(1, Math.round((mcc / 16000) * 1200));
+  const primaryFileDefault = Math.max(1, Math.round((mcc / 16000) * 4000));
+  const relatedDocDefault = Math.max(1, Math.round((mcc / 16000) * 320));
+  const relatedFileDefault = Math.max(1, Math.round((mcc / 16000) * 1200));
 
   return {
     primaryDoc: retrieval.primaryDocLimit ?? primaryDocDefault,
@@ -112,17 +112,10 @@ const fitRelatedContexts = (
 
   for (const context of relatedContexts) {
     if (budget <= 0) {
-      // Never drop entirely — truncate to at least a snippet so the LLM retains context.
-      const snippetLength = Math.min(200, context.fullFileContent.length);
-      const snippet = context.fullFileContent.slice(0, snippetLength);
-      warnings.push(
-        snippetLength > 0
-          ? `File content exhausted for ${context.filePath}; kept first ${snippetLength} chars as snippet.`
-          : `Dropped file content for ${context.filePath} because the context budget was exhausted.`
-      );
+      warnings.push(`Dropped file content for ${context.filePath} because the context budget was exhausted.`);
       fittedContexts.push({
         ...context,
-        fullFileContent: snippet
+        fullFileContent: ""
       });
       continue;
     }

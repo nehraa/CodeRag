@@ -4,16 +4,18 @@ import type {
   ContextPackage,
   GraphSnapshot,
   IndexedNodeDocument,
+  MultiHopRetrievalResult,
   RetrievedNodeContext,
   RetrievalConfig
 } from "../types.js";
 import type { SectionLimits } from "./prompt.js";
+import { deriveSectionLimits } from "./context-builder.js";
 import { FileCache } from "../store/file-cache.js";
 import { createRetrievedNodeContext } from "../retrieval/page-index.js";
 
 const buildMultiHopGraphSummary = (
   subQuestions: string[],
-  retrievalResult: { deduplicatedNodes: BlueprintNode[]; retrievalMetadata: Array<{ subQuestion: string; primaryNode?: BlueprintNode; relatedNodes: BlueprintNode[]; filesReferenced: string[] }> },
+  retrievalResult: MultiHopRetrievalResult,
   snapshot: GraphSnapshot
 ): string => {
   const filesSpanned = new Set<string>();
@@ -72,16 +74,6 @@ const buildRelatedNodeContexts = async (
   return contexts;
 };
 
-const deriveSectionLimits = (retrieval: RetrievalConfig): SectionLimits => {
-  const mcc = retrieval.maxContextChars;
-  return {
-    primaryDoc: retrieval.primaryDocLimit ?? Math.round((mcc / 16000) * 1200),
-    primaryFile: retrieval.primaryFileLimit ?? Math.round((mcc / 16000) * 4000),
-    relatedDoc: retrieval.relatedDocLimit ?? Math.round((mcc / 16000) * 320),
-    relatedFile: retrieval.relatedFileLimit ?? Math.round((mcc / 16000) * 1200)
-  };
-};
-
 /**
  * Builds a ContextPackage from multi-hop retrieval results.
  * Unlike the single-node path, there is no single primary node.
@@ -93,7 +85,7 @@ const deriveSectionLimits = (retrieval: RetrievalConfig): SectionLimits => {
 export const buildMultiHopContextPackage = async (
   question: string,
   subQuestions: string[],
-  retrievalResult: { deduplicatedNodes: BlueprintNode[]; primaryNodes: Array<BlueprintNode | undefined>; expandedNodes: BlueprintNode[]; retrievalMetadata: Array<{ subQuestion: string; primaryNode?: BlueprintNode; relatedNodes: BlueprintNode[]; filesReferenced: string[] }> },
+  retrievalResult: MultiHopRetrievalResult,
   repoPath: string,
   snapshot: GraphSnapshot,
   documents: Record<string, IndexedNodeDocument>,
@@ -134,14 +126,8 @@ export const buildMultiHopContextPackage = async (
   const fittedRelated: RetrievedNodeContext[] = [];
   for (const ctx of relatedContexts) {
     if (remainingBudget <= 0) {
-      const snippetLength = Math.min(200, ctx.fullFileContent.length);
-      const snippet = ctx.fullFileContent.slice(0, snippetLength);
-      warnings.push(
-        snippetLength > 0
-          ? `File content exhausted for ${ctx.filePath}; kept first ${snippetLength} chars as snippet.`
-          : `Dropped file content for ${ctx.filePath} because the context budget was exhausted.`
-      );
-      fittedRelated.push({ ...ctx, fullFileContent: snippet });
+      warnings.push(`Dropped file content for ${ctx.filePath} because the context budget was exhausted.`);
+      fittedRelated.push({ ...ctx, fullFileContent: "" });
       continue;
     }
 
