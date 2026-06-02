@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 
 import { z } from "zod";
@@ -86,11 +86,14 @@ const isAuthorized = (request: IncomingMessage, apiKey: string | undefined): boo
   }
 
   const expected = `Bearer ${apiKey}`;
-  if (authorization.length !== expected.length) {
-    return false;
-  }
+  // Hash both sides to a fixed-length digest so the comparison cannot leak
+  // the API key length (or the authorization header length) via response
+  // timing. timingSafeEqual requires equal-length buffers, and an early
+  // length check would re-introduce the very leak we are trying to avoid.
+  const authorizationHash = createHash("sha256").update(authorization, "utf8").digest();
+  const expectedHash = createHash("sha256").update(expected, "utf8").digest();
 
-  return timingSafeEqual(Buffer.from(authorization), Buffer.from(expected));
+  return timingSafeEqual(authorizationHash, expectedHash);
 };
 
 const hasJsonContentType = (request: IncomingMessage): boolean => {
