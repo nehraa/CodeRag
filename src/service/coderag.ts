@@ -81,7 +81,29 @@ export class CodeRag {
     return this.activeIndexPromise;
   }
 
+  /**
+   * Waits for any in-flight index operation to settle so that subsequent
+   * operations observe a consistent state. Errors are intentionally swallowed
+   * here because the original caller of the index operation already receives
+   * the rejection through its returned promise.
+   */
+  async waitForTermination(): Promise<void> {
+    if (this.activeIndexPromise) {
+      await this.activeIndexPromise.catch(() => {
+        /* original caller receives the error */
+      });
+    }
+  }
+
   private async ensureLoadedState(): Promise<LoadedState> {
+    if (this.loadedState) {
+      return this.loadedState;
+    }
+
+    // Wait for any in-flight index operation to settle before checking disk state,
+    // so we never spawn a duplicate index run while another is still running.
+    await this.waitForTermination();
+
     if (this.loadedState) {
       return this.loadedState;
     }
