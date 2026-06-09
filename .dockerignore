@@ -1,0 +1,42 @@
+# Keep the build context small and free of secrets / generated artifacts.
+.git
+.gitignore
+.github
+.DS_Store
+.serena
+.vscode
+.idea
+
+# Build output and dependencies.
+dist
+node_modules
+coverage
+*.log
+npm-debug.log*
+
+# Local CodeRag state, indexes, and downloaded models.
+.coderag
+.coderag-models
+.coderag-*
+
+# Environment files and secrets.
+.env
+.env.*
+*.pem
+*.key
+
+# Package artifacts and lockfile copies.
+*.tgz
+.npmrc
+
+# PRDs, scripts, and docs that don't affect the runtime image.
+prd
+scripts
+claude-code
+AGENTS.md
+README.md
+LICENSE
+coderag.config.json
+Dockerfile
+.dockerignore
+docker-compose.yml

@@ -1,0 +1,57 @@
+# docker-compose for the CodeRag HTTP service.
+#
+# Usage:
+#   docker compose build
+#   docker compose up -d
+#   curl http://localhost:4119/health
+#
+# Mount your target repository at /repo (read-only) and persist the index
+# across container restarts in the named volume `coderag-data`.
+
+services:
+  coderag:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_VERSION: "20"
+    image: coderag:local
+    container_name: coderag
+    restart: unless-stopped
+
+    # Drop privileges inside the container.
+    user: "1001:1001"
+
+    environment:
+      NODE_ENV: production
+      CODERAG_SERVICE_HOST: 0.0.0.0
+      CODERAG_SERVICE_PORT: "4119"
+      CODERAG_REPO_PATH: /repo
+      CODERAG_STORAGE_ROOT: /data/.coderag
+      # Pass through API keys / LLM settings without committing them.
+      CODERAG_GEMINI_API_KEY: ${CODERAG_GEMINI_API_KEY:-}
+      CODERAG_GEMINI_MODEL: ${CODERAG_GEMINI_MODEL:-models/gemini-embedding-2}
+      CODERAG_EMBEDDING_PROVIDER: ${CODERAG_EMBEDDING_PROVIDER:-local-hash}
+      CODERAG_LLM_ENABLED: ${CODERAG_LLM_ENABLED:-false}
+      CODERAG_LLM_BASE_URL: ${CODERAG_LLM_BASE_URL:-}
+      CODERAG_LLM_MODEL: ${CODERAG_LLM_MODEL:-}
+      CODERAG_LLM_API_KEY: ${CODERAG_LLM_API_KEY:-}
+
+    ports:
+      - "4119:4119"
+
+    volumes:
+      # Replace with the absolute path of the repo you want to index.
+      - ${CODERAG_TARGET_REPO:-./}:/repo:ro
+      # Persist the LanceDB index between container restarts.
+      - coderag-data:/data
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:4119/health', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  coderag-data:
