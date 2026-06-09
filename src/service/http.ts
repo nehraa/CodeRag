@@ -38,6 +38,10 @@ const applySecurityHeaders = (request: IncomingMessage, response: ServerResponse
   response.setHeader("x-content-type-options", "nosniff");
   response.setHeader("referrer-policy", "no-referrer");
   response.setHeader("cache-control", "no-store");
+  response.setHeader("access-control-allow-origin", "*");
+  response.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+  response.setHeader("access-control-allow-headers", "content-type, authorization");
+  response.setHeader("access-control-max-age", "86400");
   if ("encrypted" in request.socket && request.socket.encrypted) {
     response.setHeader("strict-transport-security", "max-age=31536000; includeSubDomains");
   }
@@ -296,6 +300,13 @@ export const createHttpServer = (coderag: CodeRag, config: CodeRagConfig): http.
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const routeKey = createRouteKey(request.method, url.pathname);
     const routeHandler = routeHandlers.get(routeKey) ?? notFoundHandler;
+
+    if (request.method === "OPTIONS") {
+      applySecurityHeaders(request, response);
+      response.writeHead(204);
+      response.end();
+      return;
+    }
 
     try {
       if (requiresAuth(url.pathname) && !isAuthorized(request, config.service.apiKey)) {
